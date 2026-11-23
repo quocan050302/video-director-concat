@@ -573,7 +573,11 @@ def test_p1_02_r03_r21_source_build_version_fallback_ffprobe_decouple_and_disk_g
     fake_bin.chmod(0o755)
 
     prof = pa.detect_platform_profile(system="Darwin", machine="arm64", os_version="14.4.1", home_dir="/Users/<local-user>")
-    found = pa.discover_concat_binary(prof, source_checkouts=[tmp_path / "Concat"])
+    # Hermetic isolation: do not depend on whether host machine already installed /Applications/Concat.app or PATH concat
+    isolated_prof = dict(prof, concat_binary_candidates=[str(tmp_path / "absent_app" / "concat")])
+    orig_which = shutil.which
+    monkeypatch.setattr(pa.shutil, "which", lambda name: None if name in {"concat", "concat.exe"} else orig_which(name))
+    found = pa.discover_concat_binary(isolated_prof, env={}, source_checkouts=[tmp_path / "Concat"])
     assert found["binary_status"] == "BINARY_FOUND"
     assert found["binary_source"] == "SOURCE_BUILD_RELEASE"
     assert "0.2.12-source" in found["app_version"]
@@ -583,14 +587,14 @@ def test_p1_02_r03_r21_source_build_version_fallback_ffprobe_decouple_and_disk_g
     no_ver_bin = tmp_path / "concat_nover"
     no_ver_bin.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
     no_ver_bin.chmod(0o755)
-    found_nv = pa.discover_concat_binary(prof, explicit_binary=no_ver_bin)
+    found_nv = pa.discover_concat_binary(isolated_prof, explicit_binary=no_ver_bin, env={})
     assert found_nv["binary_status"] == "BINARY_FOUND"
     assert found_nv["app_version"] == "VERSION_PENDING_MCP"
 
-    # Low disk (<5 GB) MUST block c0_ready_for_mcp even when binary exists
+    # Low disk (<5 GB) MUST block c0_ready_for_mcp even when binary exists on a supported OS
     monkeypatch.setattr(pa, "_disk_usage_gb", lambda _p: (2.5, 460.0))
     monkeypatch.setattr(pa, "discover_concat_binary", lambda *_a, **_kw: found)
-    env_low = pa.probe_host_environment()
+    env_low = pa.probe_host_environment(system="Darwin", machine="arm64", os_version="14.4.1")
     assert env_low["disk_safety_status"] == "DISK_BLOCK"
     assert env_low["c0_ready_for_mcp"] is False
     assert env_low["c0_status"] == "BLOCKED_LOW_DISK"
@@ -598,7 +602,7 @@ def test_p1_02_r03_r21_source_build_version_fallback_ffprobe_decouple_and_disk_g
     # Adequate disk + missing ffprobe still allows c0_ready_for_mcp while flagging qa_media_tools_status
     monkeypatch.setattr(pa, "_disk_usage_gb", lambda _p: (40.0, 460.0))
     monkeypatch.setattr(pa, "_probe_binary_version", lambda name, *_a: {"found": False, "path": None, "version": "MISSING"} if name == "ffprobe" else {"found": True, "path": "/bin/x", "version": "ok"})
-    env_noff = pa.probe_host_environment()
+    env_noff = pa.probe_host_environment(system="Darwin", machine="arm64", os_version="14.4.1")
     assert env_noff["c0_ready_for_mcp"] is True
     assert env_noff["qa_media_tools_status"] == "QA_TOOLS_FFPROBE_MISSING"
 

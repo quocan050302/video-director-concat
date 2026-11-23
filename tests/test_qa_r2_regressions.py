@@ -514,6 +514,6 @@ def test_r2_15_26_31_permissions_incomplete_bad_ffmpeg_and_missing_binary(
         "app_sha256": None,
     })
     monkeypatch.setattr(pa, "_disk_usage_gb", lambda _p: (40.0, 460.0))
-    env = pa.probe_host_environment()
+    env = pa.probe_host_environment(system="Darwin", machine="arm64", os_version="14.4.1")
     assert env["c0_ready_for_mcp"] is False
     assert env["c0_status"] == "BLOCKED_ENV_CONCAT_BINARY_MISSING"

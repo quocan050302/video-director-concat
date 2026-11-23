@@ -1,7 +1,7 @@
 {
   "name": "video-director-concat",
-  "skill_semver": "1.0.3",
-  "created_at": "2026-11-23T13:38:34.225801+00:00",
+  "skill_semver": "1.0.4",
+  "created_at": "2026-11-23T15:12:07.520681+00:00",
   "cross_platform": true,
   "platforms_supported": [
     "windows-x86_64",
@@ -43,7 +43,7 @@
     }
   ],
   "note": "MANIFEST.json intentionally excludes itself from files[] to avoid self-referential SHA-256 invalidation.",
-  "file_count": 48,
+  "file_count": 49,
   "files": [
     {
       "path": ".github/workflows/python-qa.yml",
@@ -142,18 +142,18 @@
     },
     {
       "path": "scripts/check_skill_package.py",
-      "bytes": 11999,
-      "sha256": "6c73fb5a1661a039ce889fb01a80ae50d589b6b8b2c4c4fef2d4270a321109f5"
+      "bytes": 12044,
+      "sha256": "f20f2ea11926e109fc881950f9ddfb73e41277c6c31465db23161773b84b3161"
     },
     {
       "path": "scripts/platform_adapter.py",
-      "bytes": 18813,
-      "sha256": "9de912fe23cc07de39cc039f3a84b54ec0ae64c8b5fd4d09ad8e640f42c90944"
+      "bytes": 20670,
+      "sha256": "46ee9317a5892bf0ffb738c3a22c4cdca125e1f36de82352dea58eab90827abb"
     },
     {
       "path": "scripts/probe_sources.py",
-      "bytes": 22749,
-      "sha256": "b67597ce2f6e662295f5322993d0d1016ec1f81db07ea38e86906050a1db146e"
+      "bytes": 24210,
+      "sha256": "ca506e5a634a5fdd7b5819e3fca363d39b39253872606d97d0f30cd17054c65e"
     },
     {
       "path": "scripts/validate_edl.py",
@@ -246,6 +246,11 @@
       "sha256": "f4cd6149a347781393b51ffc990e00472c0183fb11c562a1b45be91cb1a45e5d"
     },
     {
+      "path": "tests/test_ci_portability_qa_ci_01.py",
+      "bytes": 8154,
+      "sha256": "e352932e516516fec0bac58f1e6da37c9a3bcb64af412a04f8b5f888f143948c"
+    },
+    {
       "path": "tests/test_edl_contract.py",
       "bytes": 8831,
       "sha256": "930194033f122e99b42d2d9f7b7bbb323408740ce896f2e637f68b1d1a122ed7"
@@ -267,18 +272,18 @@
     },
     {
       "path": "tests/test_qa_r1_repro_and_hardening.py",
-      "bytes": 29263,
-      "sha256": "8767e291296e86b1f0a42110ac9e132639feef31217082ad3b16db75a49e253a"
+      "bytes": 29793,
+      "sha256": "10c2df47347343523d0e0b57e36175275a21eb1fb07071ce654edabb7cdc2d89"
     },
     {
       "path": "tests/test_qa_r2_regressions.py",
-      "bytes": 25441,
-      "sha256": "37a5d45d5544b5ad840e9429e53b4cc855e6310b12360f329c05b04bd36696cf"
+      "bytes": 25494,
+      "sha256": "d9cff0dc6b2e620b8aeb61d8943a4f9f70fe9f6e7d5fae6b20b71521521a05e5"
     },
     {
       "path": "tests/test_qa_r3_regressions.py",
-      "bytes": 27434,
-      "sha256": "adef1d30d7ab2c4a2d8f4579d803e79b822d4e44b52363c499653bbc8c763154"
+      "bytes": 27487,
+      "sha256": "c281395e2bd1c2aa3fc9bd1c8567348d0a9b3c6c8162431a8f4fe78692a1ef93"
     },
     {
       "path": "tests/test_skill_structure.py",
@@ -288,7 +293,7 @@
   ],
   "test_statuses": {
     "static_validation": "PASS_SKILL_STATIC_READY",
-    "pytest_suite": "45_PASSED_0_FAILED_0_SKIPPED",
-    "c0_c1_concat_mcp_live": "BLOCKED_ENV_CONCAT_BINARY_MISSING"
+    "pytest_suite": "49_PASSED_0_FAILED_0_SKIPPED",
+    "c0_c1_concat_mcp_live": "HOST_DEPENDENT_C0_PASS_C1_TECHNICAL_SMOKE_MACOS_ARM64_OWNER_AUDIO_PENDING"
   }
 }

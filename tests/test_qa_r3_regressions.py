@@ -444,7 +444,7 @@ def test_r3_20_21_22_23_25_env_tools_mutation_package_and_cli_contract(tmp_path:
             "app_sha256": None,
         },
     )
-    env_probe = pa.probe_host_environment()
+    env_probe = pa.probe_host_environment(system="Darwin", machine="arm64", os_version="14.4.1")
     assert env_probe["binary_status"] == "BINARY_BLOCKED_NOT_FOUND"
     assert env_probe["c0_status"] == "BLOCKED_ENV_CONCAT_BINARY_MISSING"
     assert env_probe["c0_ready_for_mcp"] is False

@@ -31,9 +31,23 @@ MEDIA_EXTENSIONS = {
 }
 
 PROTECTED_EXACT_ROOTS = {
-    "/", "/System", "/Library", "/Users", "/Volumes", "/bin", "/sbin", "/usr", "/etc", "/private/etc",
-    "C:\\", "C:\\Windows", "C:\\Program Files", "C:\\Program Files (x86)", "C:\\Users",
+    "/", "/System", "/Library", "/Users", "/Volumes", "/home", "/root",
+    "/bin", "/sbin", "/usr", "/etc", "/private/etc",
+    "/proc", "/sys", "/dev", "/boot", "/run", "/var/run",
 }
+
+PROTECTED_POSIX_PREFIXES = (
+    "/System", "/etc", "/private/etc", "/bin", "/sbin",
+    "/usr/bin", "/usr/sbin", "/proc", "/sys", "/dev", "/boot",
+)
+
+PROTECTED_WINDOWS_EXACT_LOWER = {
+    "c:/", "c:/windows", "c:/program files", "c:/program files (x86)", "c:/users",
+}
+
+PROTECTED_WINDOWS_PREFIXES_LOWER = (
+    "c:/windows", "c:/program files", "c:/program files (x86)",
+)
 
 INCOMPLETE_REASON_PREFIXES = (
     "SCAN_BUDGET_REACHED:",
@@ -75,18 +89,49 @@ INVENTORY_FIELDS = [
 ]
 
 
-def _is_protected_path(resolved: Path) -> bool:
-    norm = str(resolved)
+def _normalize_raw_root_str(raw_path: str) -> str:
+    s = raw_path.strip()
+    if not s:
+        return ""
+    slash_norm = s.replace("\\", "/")
+    if len(slash_norm) > 1 and not (len(slash_norm) == 3 and slash_norm[1:3] == ":/"):
+        slash_norm = slash_norm.rstrip("/")
+    return slash_norm
+
+
+def _is_protected_raw_input(raw_path: str) -> bool:
+    norm = _normalize_raw_root_str(raw_path)
+    if not norm:
+        return False
     if norm in PROTECTED_EXACT_ROOTS:
+        return True
+    norm_lower = norm.lower()
+    if norm_lower in PROTECTED_WINDOWS_EXACT_LOWER:
+        return True
+    for wpref in PROTECTED_WINDOWS_PREFIXES_LOWER:
+        if norm_lower == wpref or norm_lower.startswith(wpref + "/"):
+            return True
+    for prefix in PROTECTED_POSIX_PREFIXES:
+        if norm == prefix or norm.startswith(prefix + "/"):
+            return True
+    try:
+        home_raw = _normalize_raw_root_str(str(Path.home()))
+        home_res = _normalize_raw_root_str(str(Path.home().resolve()))
+        if norm in {home_raw, home_res}:
+            return True
+    except OSError:
+        pass
+    return False
+
+
+def _is_protected_path(resolved: Path) -> bool:
+    if _is_protected_raw_input(str(resolved)):
         return True
     try:
         if resolved == Path.home().resolve():
             return True
     except OSError:
         pass
-    for prefix in ("/System", "/etc", "/private/etc", "/bin", "/sbin"):
-        if norm == prefix or norm.startswith(prefix + "/"):
-            return True
     return False
 
 
@@ -213,6 +258,9 @@ def discover_inputs_detailed(
         raw_str = str(raw)
         if _has_traversal_segments(raw_str):
             _record_rejection(raw_str, "PATH_TRAVERSAL_REJECTED")
+            continue
+        if _is_protected_raw_input(raw_str):
+            _record_rejection(raw_str, "PROTECTED_SYSTEM_PATH_REJECTED")
             continue
 
         p = Path(raw_str)

@@ -347,15 +347,55 @@ def _probe_binary_version(binary_name: str, version_args: list[str] | None = Non
     return {"found": True, "path": resolved, "version": first_line, "exit_code": rc}
 
 
+def _probe_linux_hardware(meminfo_path: Path = Path("/proc/meminfo")) -> dict[str, Any]:
+    info: dict[str, Any] = {
+        "cpu_cores": os.cpu_count() or 0,
+        "ram_total_bytes": None,
+        "ram_available_or_unknown": "UNKNOWN",
+    }
+    try:
+        if meminfo_path.is_file():
+            text = meminfo_path.read_text(encoding="utf-8", errors="replace")
+            tot_m = re.search(r"^MemTotal:\s+(\d+)\s+kB", text, flags=re.M)
+            avail_m = re.search(r"^MemAvailable:\s+(\d+)\s+kB", text, flags=re.M)
+            if tot_m:
+                info["ram_total_bytes"] = int(tot_m.group(1)) * 1024
+            if avail_m:
+                avail_gb = round((int(avail_m.group(1)) * 1024) / (1024**3), 2)
+                info["ram_available_or_unknown"] = f"{avail_gb} GiB (/proc/meminfo MemAvailable)"
+    except OSError:
+        pass
+    return info
+
+
 def probe_host_environment(
     explicit_binary: str | Path | None = None,
     source_checkouts: list[str | Path] | None = None,
+    *,
+    system: str | None = None,
+    machine: str | None = None,
+    os_version: str | None = None,
 ) -> dict[str, Any]:
     """Execute bounded read-only M0/C0 probe with decoupled OS, disk, binary, QA-tool, and MCP statuses."""
-    sys_name = platform.system()
-    mac_hw = _probe_macos_hardware() if sys_name == "Darwin" else None
-    os_ver = mac_hw["os_version"] if mac_hw else platform.version()
-    profile = detect_platform_profile(system=sys_name, machine=platform.machine(), os_version=os_ver)
+    live_sys = platform.system()
+    sys_name = (system or live_sys).strip()
+    mach_name = (machine or platform.machine()).strip()
+
+    mac_hw = _probe_macos_hardware() if (sys_name == "Darwin" and sys.platform == "darwin") else None
+    linux_hw = _probe_linux_hardware() if (sys_name == "Linux" and sys.platform.startswith("linux")) else None
+
+    if os_version is not None:
+        os_ver = os_version
+    elif mac_hw and mac_hw["os_version"] != "UNKNOWN":
+        os_ver = mac_hw["os_version"]
+    elif sys_name == "Darwin":
+        os_ver = platform.mac_ver()[0] or "UNKNOWN"
+    elif sys_name == "Linux":
+        os_ver = platform.release()
+    else:
+        os_ver = platform.version()
+
+    profile = detect_platform_profile(system=sys_name, machine=mach_name, os_version=os_ver)
 
     disk_free_gb, disk_total_gb = _disk_usage_gb(Path.home())
     if disk_free_gb < MIN_DISK_BLOCK_GB:
@@ -401,7 +441,11 @@ def probe_host_environment(
     )
 
     if not profile["os_supported"]:
-        c0_status = "BLOCKED_OS_VERSION"
+        c0_status = (
+            "BLOCKED_OS_VERSION"
+            if profile["os_gate_status"] == "BLOCKED_OS_VERSION"
+            else "BLOCKED_UNSUPPORTED_OS"
+        )
     elif disk_status == "DISK_BLOCK":
         c0_status = "BLOCKED_LOW_DISK"
     elif bin_info["binary_status"] != "BINARY_FOUND":
@@ -409,8 +453,14 @@ def probe_host_environment(
     else:
         c0_status = "C0_READY_FOR_MCP_HANDSHAKE"
 
-    ram_total_bytes = mac_hw["ram_total_bytes"] if mac_hw else None
+    ram_total_bytes = mac_hw["ram_total_bytes"] if mac_hw else (linux_hw["ram_total_bytes"] if linux_hw else None)
     ram_total_str = f"{round(ram_total_bytes / (1024**3), 2)} GiB" if ram_total_bytes else "UNKNOWN"
+    ram_avail_str = (
+        mac_hw["ram_available_or_unknown"]
+        if mac_hw
+        else (linux_hw["ram_available_or_unknown"] if linux_hw else "UNKNOWN")
+    )
+    cpu_cores = mac_hw["cpu_cores"] if mac_hw else (linux_hw["cpu_cores"] if linux_hw else (os.cpu_count() or 0))
 
     return {
         "time_checked": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -419,9 +469,9 @@ def probe_host_environment(
         "platform_profile": profile,
         "os_version": profile["os_version"],
         "arch": profile["arch"],
-        "cpu_cores": mac_hw["cpu_cores"] if mac_hw else (os.cpu_count() or 0),
+        "cpu_cores": cpu_cores,
         "ram_total": ram_total_str,
-        "ram_available_or_unknown": mac_hw["ram_available_or_unknown"] if mac_hw else "UNKNOWN",
+        "ram_available_or_unknown": ram_avail_str,
         "gpu_model_or_unknown": mac_hw["gpu_model_or_unknown"] if mac_hw else "UNKNOWN",
         "metal_capability_or_unknown": mac_hw["metal_capability_or_unknown"] if mac_hw else "UNKNOWN",
         "disk_free": f"{disk_free_gb} GiB / {disk_total_gb} GiB",
