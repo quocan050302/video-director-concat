@@ -29,6 +29,7 @@ def _sample_inventory() -> dict:
     return {
         "U001": {
             "source_id": "U001",
+            "root_id": "R01",
             "relative_label": "owned_studio_01.mp4",
             "media_type": "video",
             "rights_tag": "OWNED",
@@ -40,6 +41,7 @@ def _sample_inventory() -> dict:
         },
         "U002": {
             "source_id": "U002",
+            "root_id": "R01",
             "relative_label": "owned_usage_02.mp4",
             "media_type": "video",
             "rights_tag": "OWNED",
@@ -51,6 +53,7 @@ def _sample_inventory() -> dict:
         },
         "U003": {
             "source_id": "U003",
+            "root_id": "R01",
             "relative_label": "owned_bgm_03.wav",
             "media_type": "audio",
             "rights_tag": "OWNED",
@@ -62,6 +65,7 @@ def _sample_inventory() -> dict:
         },
         "REF1": {
             "source_id": "REF1",
+            "root_id": "R01",
             "relative_label": "competitor_ref.mp4",
             "media_type": "video",
             "rights_tag": "ANALYSIS_ONLY",
@@ -73,6 +77,7 @@ def _sample_inventory() -> dict:
         },
         "LIC1": {
             "source_id": "LIC1",
+            "root_id": "R01",
             "relative_label": "licensed_broll.mp4",
             "media_type": "video",
             "rights_tag": "LICENSED",
@@ -85,11 +90,37 @@ def _sample_inventory() -> dict:
     }
 
 
+def _integrity_for(inv: dict) -> dict:
+    return {
+        "checked_at": "2026-11-23T13:00:00Z",
+        "status": "PASS_SOURCES_UNCHANGED",
+        "entries": [
+            {
+                "source_id": sid,
+                "root_id": m["root_id"],
+                "relative_label": m["relative_label"],
+                "expected_sha256": m["sha256"],
+                "actual_sha256": m["sha256"],
+                "status": "UNCHANGED",
+            }
+            for sid, m in inv.items()
+        ],
+    }
+
+
 def test_t04_example_edl_valid(tmp_path: Path) -> None:
     run_dir = _make_run_dir(tmp_path)
-    res = ve.validate_all(_example_edl(), _sample_inventory(), run_dir=run_dir, validation_mode="release")
-    assert res["status"] == "PASS_EDL_VALID_FOR_RELEASE", res["errors"]
-    assert res["release_ready_edl"] is True
+    inv = _sample_inventory()
+    res_struct = ve.validate_all(_example_edl(), inv, run_dir=run_dir, validation_mode="structural")
+    assert res_struct["status"] == "PASS_EDL_STRUCTURAL_ONLY", res_struct["errors"]
+    assert res_struct["release_ready"] is False
+
+    res_rel = ve.validate_all(
+        _example_edl(), inv, run_dir=run_dir,
+        source_integrity_report=_integrity_for(inv), validation_mode="release",
+    )
+    assert res_rel["status"] == "PASS_EDL_VALID_FOR_RELEASE", res_rel["errors"]
+    assert res_rel["release_ready"] is True
 
 
 def test_t07_out_of_duration_and_speed_mismatch_rejected(tmp_path: Path) -> None:
@@ -113,10 +144,11 @@ def test_t08_analysis_only_blocked_from_final_edl(tmp_path: Path) -> None:
 
 def test_t08_licensed_without_ledger_rejected_and_approved_passes(tmp_path: Path) -> None:
     run_dir = _make_run_dir(tmp_path)
+    inv = _sample_inventory()
     edl = _example_edl()
     edl["shots"][1]["source_id"] = "LIC1"
     edl["shots"][1]["source_rights"] = "LICENSED"
-    res_missing = ve.validate_all(edl, _sample_inventory(), license_ledger={}, run_dir=run_dir, validation_mode="release")
+    res_missing = ve.validate_all(edl, inv, license_ledger={}, run_dir=run_dir, validation_mode="release")
     assert res_missing["status"] == "FAIL_EDL_INVALID"
     assert any("MISSING_LICENSE_LEDGER_ENTRY" in e for e in res_missing["errors"])
 
@@ -129,12 +161,16 @@ def test_t08_licensed_without_ledger_rejected_and_approved_passes(tmp_path: Path
             "license_evidence_path": "evidence/lic1_terms.txt",
         }
     }
-    res_ok = ve.validate_all(edl, _sample_inventory(), license_ledger=ledger, run_dir=run_dir, validation_mode="release")
+    res_ok = ve.validate_all(
+        edl, inv, license_ledger=ledger, run_dir=run_dir,
+        source_integrity_report=_integrity_for(inv), validation_mode="release",
+    )
     assert res_ok["status"] == "PASS_EDL_VALID_FOR_RELEASE", res_ok["errors"]
 
 
 def test_t11_horizontal_and_portrait_supported_and_landscape_in_portrait_checked(tmp_path: Path) -> None:
     run_dir = _make_run_dir(tmp_path)
+    inv = _sample_inventory()
     edl_16x9 = _example_edl()
     edl_16x9["output_spec"] = {"width": 1920, "height": 1080, "timeline_fps": "24/1", "aspect_ratio": "16:9"}
     for s in edl_16x9["shots"]:
@@ -143,33 +179,40 @@ def test_t11_horizontal_and_portrait_supported_and_landscape_in_portrait_checked
     edl_16x9["shots"][0]["output_out_frame"] = 72
     edl_16x9["shots"][1]["output_in_frame"] = 72
     edl_16x9["shots"][1]["output_out_frame"] = 144
-    res_16x9 = ve.validate_all(edl_16x9, _sample_inventory(), run_dir=run_dir, validation_mode="release")
+    res_16x9 = ve.validate_all(
+        edl_16x9, inv, run_dir=run_dir,
+        source_integrity_report=_integrity_for(inv), validation_mode="release",
+    )
     assert res_16x9["status"] == "PASS_EDL_VALID_FOR_RELEASE", res_16x9["errors"]
 
     edl_bad_crop = _example_edl()
     edl_bad_crop["shots"][1]["framing_mode"] = "native"
-    res_bad = ve.validate_all(edl_bad_crop, _sample_inventory(), run_dir=run_dir, validation_mode="release")
+    res_bad = ve.validate_all(edl_bad_crop, inv, run_dir=run_dir, validation_mode="release")
     assert res_bad["status"] == "FAIL_EDL_INVALID"
     assert any("LANDSCAPE_IN_PORTRAIT_NEEDS_EXPLICIT_FRAMING" in e for e in res_bad["errors"])
 
 
 def test_t13_caption_policy_and_claim_removal(tmp_path: Path) -> None:
     run_dir = _make_run_dir(tmp_path)
+    inv = _sample_inventory()
     edl = _example_edl()
     edl["caption_policy"] = "OFF"
     edl["overlays"].append({"overlay_id": "C001", "overlay_type": "karaoke", "text": "Hello"})
-    res_off = ve.validate_all(edl, _sample_inventory(), run_dir=run_dir, validation_mode="release")
+    res_off = ve.validate_all(edl, inv, run_dir=run_dir, validation_mode="release")
     assert res_off["status"] == "FAIL_EDL_INVALID"
     assert any("UNAUTHORIZED_CAPTION_OVERLAY" in e for e in res_off["errors"])
 
     edl_on = copy.deepcopy(edl)
     edl_on["caption_policy"] = "ON"
-    res_on = ve.validate_all(edl_on, _sample_inventory(), run_dir=run_dir, validation_mode="release")
+    res_on = ve.validate_all(
+        edl_on, inv, run_dir=run_dir,
+        source_integrity_report=_integrity_for(inv), validation_mode="release",
+    )
     assert res_on["status"] == "PASS_EDL_VALID_FOR_RELEASE", res_on["errors"]
 
     edl_claim = _example_edl()
     edl_claim["claims"].append({"claim_id": "E999", "text": "Unverified 10x ROI", "status": "UNKNOWN_REMOVE"})
-    res_claim = ve.validate_all(edl_claim, _sample_inventory(), run_dir=run_dir, validation_mode="release")
+    res_claim = ve.validate_all(edl_claim, inv, run_dir=run_dir, validation_mode="release")
     assert res_claim["status"] == "FAIL_EDL_INVALID"
     assert any("UNVERIFIED_CLAIM_PRESENT" in e for e in res_claim["errors"])
 

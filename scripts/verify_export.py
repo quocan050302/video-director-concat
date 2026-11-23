@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
-"""Fail-closed post-export QA for Concat-exported MP4 files (QA.R2 hardened).
+"""Fail-closed post-export QA for Concat-exported MP4 files (QA.R3 hardened).
 
-Strict separation of axes & trust boundaries:
-- qa_level="technical": Standalone media diagnostic (probe, full decode, spec, black/freeze + EOF,
-  volumedetect + ebur128 LUFS/true peak + silencedetect dropouts). Returns PASS_TECHNICAL_ONLY at most.
-- qa_level="release": Enforces gate_phase (C1|C2|C4) and release_policy (technical-smoke|full-creative):
-  * Separates UNIT_SIMULATED_PROVENANCE (never live_concat_verified or PASS_END_TO_END_EXPORT_QA)
-    from LIVE_MCP_EXPORT_EVIDENCE (requires complete live tool trace, matching start/wait job IDs,
-    plausible timestamp order, matching save/reopen fingerprints, non-symlink output/project roots,
-    and CONCAT_MCP_PREVIEW_FRAME preview provenance).
-  * Restricts technical-smoke strictly to C1 (sets technical_e2e_gate_pass=True,
-    creative_release_gate_pass=False, release_gate_pass=False). Rejects technical-smoke on C2/C4.
-  * Requires OWNER_HUMAN listening evidence with auditory checklist & matching MP4 SHA-256 for
-    PASS_AUDIO_PERCEPTUAL (rejects agent/bot self-attestation).
+Enforces:
+- Full planned audio coverage: ANY non-optional audio_tracks (VO, BGM, SFX, ambience, UI clicks) or
+  mandatory cue_sheet entries reject --allow-silent; only explicitly silent plans permit SKIPPED_SILENT_MODE.
+- Content-conditional OWNER_HUMAN auditory checklist (forbids 'N/A' on intelligibility/sync for VO,
+  ducking for BGM+VO, pops_clicks for SFX), confirmation_source == OWNER_INTERACTION_RECORDED,
+  and reviewed_at >= exported_at.
+- Live MCP provenance trust boundaries: requires BOTH export_start.started_at & export_wait.completed_at,
+  consistent project_id across mutating tool_trace entries, AND an on-disk verified raw JSONL transcript
+  (raw_transcript_path + raw_transcript_sha256) containing all referenced call_ids before setting
+  evidence_trust_level == LIVE_OBSERVED_WITH_RAW_TRANSCRIPT, live_concat_verified=True, or production_release_pass=True.
 """
 
 from __future__ import annotations
@@ -78,7 +76,6 @@ def _parse_iso_ts(raw: Any) -> dt.datetime | None:
 
 
 def probe_export(mp4: str | Path, timeout_s: int = 30, require_full_decode: bool = True) -> dict[str, Any]:
-    """Validate real MP4 exists, is non-empty, not .tmp, probes cleanly, and passes full decode."""
     p = Path(mp4)
     if not p.exists() or not p.is_file():
         return {"status": "FAIL_EXPORT_MISSING", "error": f"MP4 file does not exist: {p}"}
@@ -92,14 +89,7 @@ def probe_export(mp4: str | Path, timeout_s: int = 30, require_full_decode: bool
     if not ffprobe_bin:
         return {"status": "BLOCKED_ENV_FFPROBE_MISSING", "error": "ffprobe not available"}
 
-    cmd = [
-        ffprobe_bin,
-        "-v", "error",
-        "-print_format", "json",
-        "-show_format",
-        "-show_streams",
-        str(p),
-    ]
+    cmd = [ffprobe_bin, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(p)]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, check=False)
     except subprocess.TimeoutExpired:
@@ -143,10 +133,7 @@ def probe_export(mp4: str | Path, timeout_s: int = 30, require_full_decode: bool
         except OSError as exc:
             return {"status": "FAIL_EXPORT_DECODE", "error": str(exc)}
         if d_proc.returncode != 0 or d_proc.stderr.strip():
-            return {
-                "status": "FAIL_EXPORT_DECODE",
-                "error": (d_proc.stderr or f"ffmpeg exit={d_proc.returncode}").strip()[:400],
-            }
+            return {"status": "FAIL_EXPORT_DECODE", "error": (d_proc.stderr or f"ffmpeg exit={d_proc.returncode}").strip()[:400]}
         decode_verified = True
 
     return {
@@ -240,7 +227,6 @@ def detect_unintended_blacks_and_freezes(
     duration_s: float | None = None,
     timeout_s: int = 60,
 ) -> dict[str, Any]:
-    """Run ffmpeg blackdetect/freezedetect with strict exit-code checks and EOF trailing freeze closure."""
     ffmpeg_bin = shutil.which("ffmpeg")
     if not ffmpeg_bin:
         return {"status": "BLOCKED_ENV_FFMPEG_MISSING", "unintended_blacks": [], "unintended_freezes": []}
@@ -250,13 +236,9 @@ def detect_unintended_blacks_and_freezes(
         duration_s = float(pr.get("duration_s") or 0.0) if pr.get("status") == "PASS_PROBE_AND_DECODE" else 0.0
 
     cmd = [
-        ffmpeg_bin,
-        "-hide_banner",
-        "-i", str(mp4),
+        ffmpeg_bin, "-hide_banner", "-i", str(mp4),
         "-vf", "blackdetect=d=0.35:pix_th=0.08,freezedetect=n=-60dB:d=1.5",
-        "-an",
-        "-f", "null",
-        "-",
+        "-an", "-f", "null", "-",
     ]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, check=False)
@@ -277,18 +259,13 @@ def detect_unintended_blacks_and_freezes(
     allowed_blacks = _edl_intentional_windows(edl, "intentional_black")
     allowed_freezes = _edl_intentional_windows(edl, "intentional_freeze")
 
-    unintended_blacks = []
-    intentional_blacks = []
+    unintended_blacks, intentional_blacks = [], []
     for m in re.finditer(r"black_start:([\d.]+)\s+black_end:([\d.]+)\s+black_duration:([\d.]+)", stderr):
         bs, be, bd = float(m.group(1)), float(m.group(2)), float(m.group(3))
         rec = {"start_s": bs, "end_s": be, "duration_s": bd}
-        if _interval_covered(bs, be, allowed_blacks):
-            intentional_blacks.append(rec)
-        else:
-            unintended_blacks.append(rec)
+        (intentional_blacks if _interval_covered(bs, be, allowed_blacks) else unintended_blacks).append(rec)
 
-    unintended_freezes = []
-    intentional_freezes = []
+    unintended_freezes, intentional_freezes = [], []
     starts = [float(x) for x in re.findall(r"freeze_start:\s*([\d.]+)", stderr)]
     ends = [float(x) for x in re.findall(r"freeze_end:\s*([\d.]+)", stderr)]
     if len(starts) > len(ends):
@@ -298,10 +275,7 @@ def detect_unintended_blacks_and_freezes(
 
     for fs, fe in zip(starts, ends):
         rec = {"start_s": fs, "end_s": fe, "duration_s": round(max(0.0, fe - fs), 3)}
-        if _interval_covered(fs, fe, allowed_freezes):
-            intentional_freezes.append(rec)
-        else:
-            unintended_freezes.append(rec)
+        (intentional_freezes if _interval_covered(fs, fe, allowed_freezes) else unintended_freezes).append(rec)
 
     status = "PASS" if (not unintended_blacks and not unintended_freezes) else "FAIL_UNINTENDED_BLACK_OR_FREEZE"
     return {
@@ -313,22 +287,58 @@ def detect_unintended_blacks_and_freezes(
     }
 
 
-def _edl_requires_audio(edl: dict[str, Any] | None, cue_sheet: list[dict[str, Any]] | None) -> bool:
+def _inspect_audio_plan_roles(edl: dict[str, Any] | None, cue_sheet: list[dict[str, Any]] | None) -> dict[str, bool]:
+    """Inspect EDL and cue sheet for mandatory VO, BGM, SFX, or any planned audio tracks."""
+    has_vo = False
+    has_bgm = False
+    has_sfx = False
+    has_any_mandatory = False
+
     if edl:
         vp = str(edl.get("voice_policy") or "").strip().upper()
         if vp and vp not in {"NONE", "SILENT", "OFF"}:
-            return True
+            has_vo = True
+            has_any_mandatory = True
         for ac in edl.get("audio_tracks", []):
-            if isinstance(ac, dict):
-                tr = str(ac.get("track") or "").upper()
-                if any(k in tr for k in ("VO", "VOICE", "DIALOG", "SPEECH")):
-                    return True
+            if not isinstance(ac, dict):
+                continue
+            if ac.get("optional") is True and ac.get("explicitly_omitted") is True:
+                continue
+            has_any_mandatory = True
+            tr = str(ac.get("track") or ac.get("role") or "").upper()
+            if any(k in tr for k in ("VO", "VOICE", "DIALOG", "SPEECH")):
+                has_vo = True
+            elif any(k in tr for k in ("BGM", "MUSIC", "SCORE", "AMBIENCE")):
+                has_bgm = True
+            elif any(k in tr for k in ("SFX", "FX", "CLICK", "FOLEY")):
+                has_sfx = True
+
     for cue in cue_sheet or []:
-        if isinstance(cue, dict):
-            ct = str(cue.get("cue_type") or "").upper()
-            if any(k in ct for k in ("VO", "VOICE", "DIALOG", "SPEECH")):
-                return True
-    return False
+        if not isinstance(cue, dict):
+            continue
+        if cue.get("optional") is True and cue.get("explicitly_omitted") is True:
+            continue
+        ct = str(cue.get("cue_type") or "").upper()
+        if any(k in ct for k in ("SILENCE", "PAUSE", "GAP")):
+            continue
+        has_any_mandatory = True
+        if any(k in ct for k in ("VO", "VOICE", "DIALOG", "SPEECH")):
+            has_vo = True
+        elif any(k in ct for k in ("BGM", "MUSIC", "SCORE", "AMBIENCE")):
+            has_bgm = True
+        elif any(k in ct for k in ("SFX", "FX", "CLICK", "FOLEY")):
+            has_sfx = True
+
+    return {"has_any": has_any_mandatory, "has_vo": has_vo, "has_bgm": has_bgm, "has_sfx": has_sfx}
+
+
+def audio_expected_by_plan(edl: dict[str, Any] | None, cue_sheet: list[dict[str, Any]] | None) -> bool:
+    """Return True if ANY mandatory VO, BGM, SFX, ambience, or audio track is planned."""
+    return _inspect_audio_plan_roles(edl, cue_sheet)["has_any"]
+
+
+def _edl_requires_audio(edl: dict[str, Any] | None, cue_sheet: list[dict[str, Any]] | None) -> bool:
+    return audio_expected_by_plan(edl, cue_sheet)
 
 
 def measure_audio_segments(
@@ -341,8 +351,7 @@ def measure_audio_segments(
     max_true_peak_dbfs: float = -0.05,
     timeout_s: int = 60,
 ) -> dict[str, Any]:
-    """Measure volumedetect, EBU R128 LUFS/true peak, and silencedetect (including EOF silence) against planned cues."""
-    if not require_audio and _edl_requires_audio(edl, cue_sheet):
+    if not require_audio and audio_expected_by_plan(edl, cue_sheet):
         return {
             "audio_signal_status": "FAIL_SILENT_OVERRIDE_CONFLICTS_WITH_AUDIO_PLAN",
             "audio_perceptual_status": "PERCEPTUAL_AUDIO_PENDING",
@@ -352,10 +361,7 @@ def measure_audio_segments(
 
     probe = probe_data or probe_export(mp4, timeout_s=min(timeout_s, 30), require_full_decode=False)
     if probe.get("status") != "PASS_PROBE_AND_DECODE":
-        return {
-            "audio_signal_status": "FAIL_EXPORT_INVALID",
-            "audio_perceptual_status": "PERCEPTUAL_AUDIO_PENDING",
-        }
+        return {"audio_signal_status": "FAIL_EXPORT_INVALID", "audio_perceptual_status": "PERCEPTUAL_AUDIO_PENDING"}
 
     if not probe.get("has_audio"):
         return {
@@ -371,17 +377,11 @@ def measure_audio_segments(
         }
 
     if int(probe.get("sample_rate") or 0) <= 0 or int(probe.get("channels") or 0) <= 0:
-        return {
-            "audio_signal_status": "FAIL_AUDIO_STREAM_INVALID",
-            "audio_perceptual_status": "PERCEPTUAL_AUDIO_PENDING",
-        }
+        return {"audio_signal_status": "FAIL_AUDIO_STREAM_INVALID", "audio_perceptual_status": "PERCEPTUAL_AUDIO_PENDING"}
 
     ffmpeg_bin = shutil.which("ffmpeg")
     if not ffmpeg_bin:
-        return {
-            "audio_signal_status": "BLOCKED_ENV_FFMPEG_MISSING",
-            "audio_perceptual_status": "PERCEPTUAL_AUDIO_PENDING",
-        }
+        return {"audio_signal_status": "BLOCKED_ENV_FFMPEG_MISSING", "audio_perceptual_status": "PERCEPTUAL_AUDIO_PENDING"}
 
     cmd_vol = [
         ffmpeg_bin, "-hide_banner", "-i", str(mp4), "-vn",
@@ -408,7 +408,6 @@ def measure_audio_segments(
     mean_db = float(m_mean.group(1)) if m_mean else None
     max_db = float(m_max.group(1)) if m_max else None
 
-    # Parse BOTH silence_start and silence_end, closing trailing EOF silence at duration_s
     dur_s = float(probe.get("duration_s") or 0.0)
     s_starts = [float(x) for x in re.findall(r"silence_start:\s*([\d.]+)", stderr)]
     s_ends = [float(x) for x in re.findall(r"silence_end:\s*([\d.]+)", stderr)]
@@ -418,16 +417,11 @@ def measure_audio_segments(
             s_ends.append(round(eof_t, 3))
 
     planned_windows = _cue_planned_silence_windows(cue_sheet, edl)
-    all_silences: list[dict[str, float]] = []
-    planned_silences: list[dict[str, float]] = []
-    unexpected_dropouts: list[dict[str, float]] = []
+    all_silences, planned_silences, unexpected_dropouts = [], [], []
     for ss, se in zip(s_starts, s_ends):
         rec = {"start_s": ss, "end_s": se, "duration_s": round(max(0.0, se - ss), 3)}
         all_silences.append(rec)
-        if _interval_covered(ss, se, planned_windows):
-            planned_silences.append(rec)
-        else:
-            unexpected_dropouts.append(rec)
+        (planned_silences if _interval_covered(ss, se, planned_windows) else unexpected_dropouts).append(rec)
 
     integrated_lufs: float | None = None
     true_peak_dbfs: float | None = None
@@ -534,11 +528,8 @@ def compare_preview_export_frame(
             pass
 
     cmd = [
-        ffmpeg_bin, "-hide_banner",
-        "-i", str(prev),
-        "-ss", f"{aligned_t:.6f}",
-        "-i", str(mp4),
-        "-frames:v", "1",
+        ffmpeg_bin, "-hide_banner", "-i", str(prev),
+        "-ss", f"{aligned_t:.6f}", "-i", str(mp4), "-frames:v", "1",
         "-lavfi", "[0:v]split=2[p1][p2];[1:v]split=2[e1][e2];[p1][e1]ssim;[p2][e2]psnr",
         "-f", "null", "-",
     ]
@@ -584,21 +575,55 @@ def compare_preview_export_frame(
     }
 
 
+def _verify_raw_transcript(
+    raw_path_str: str,
+    expected_sha: str,
+    required_call_ids: set[str],
+) -> tuple[bool, list[str]]:
+    errors: list[str] = []
+    rp = Path(raw_path_str)
+    if rp.is_symlink() or not rp.exists() or not rp.is_file():
+        return False, ["MCP_PROVENANCE_RAW_TRANSCRIPT_NOT_FOUND"]
+    if not SHA256_RE.match(expected_sha):
+        return False, ["MCP_PROVENANCE_RAW_TRANSCRIPT_INVALID_SHA256"]
+    actual_sha = _stream_sha256(rp)
+    if actual_sha.lower() != expected_sha.lower():
+        return False, ["MCP_PROVENANCE_RAW_TRANSCRIPT_SHA256_MISMATCH"]
+
+    seen_ids: set[str] = set()
+    try:
+        for line in rp.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            obj = json.loads(s)
+            if isinstance(obj, dict) and obj.get("call_id"):
+                seen_ids.add(str(obj["call_id"]))
+    except (OSError, json.JSONDecodeError) as exc:
+        return False, [f"MCP_PROVENANCE_RAW_TRANSCRIPT_CORRUPT:{exc}"]
+
+    missing_ids = sorted(required_call_ids - seen_ids)
+    if missing_ids:
+        errors.append(f"MCP_PROVENANCE_RAW_TRANSCRIPT_MISSING_CALL_IDS:{missing_ids}")
+        return False, errors
+    return True, []
+
+
 def validate_mcp_export_provenance(
     mcp_evidence: dict[str, Any] | None,
     probe_data: dict[str, Any],
     expected_run_id: str | None = None,
     expected_project_id: str | None = None,
 ) -> dict[str, Any]:
-    """Validate orchestrator-captured Concat MCP provenance, tool trace, IDs, timestamps, and paths."""
     trust_note = (
-        "Validates orchestrator-captured live MCP trace consistency and on-disk project/preview/export hashes; "
-        "self-supplied JSON alone is not external cryptographic attestation."
+        "Validates orchestrator-captured live MCP trace consistency, raw JSONL transcript hash, and on-disk "
+        "project/preview/export hashes; logs remain locally captured records, not third-party cryptographic attestation."
     )
     if not mcp_evidence or not isinstance(mcp_evidence, dict):
         return {
             "status": "RELEASE_BLOCKED_NO_MCP_PROVENANCE",
             "evidence_source": "MISSING",
+            "evidence_trust_level": "NONE",
             "live_evidence_eligible": False,
             "errors": ["RELEASE_BLOCKED_NO_MCP_PROVENANCE: missing Concat MCP export evidence"],
             "trust_boundary": trust_note,
@@ -620,10 +645,11 @@ def validate_mcp_export_provenance(
     if bin_sha and not SHA256_RE.match(bin_sha):
         errors.append("MCP_PROVENANCE_INVALID_BINARY_SHA256")
 
+    proj_id = str(mcp_evidence.get("project_id") or "").strip()
     if expected_run_id and str(mcp_evidence.get("run_id") or "") != expected_run_id:
         errors.append(f"MCP_PROVENANCE_RUN_ID_MISMATCH: got={mcp_evidence.get('run_id')!r} expected={expected_run_id!r}")
-    if expected_project_id and str(mcp_evidence.get("project_id") or "") != expected_project_id:
-        errors.append(f"MCP_PROVENANCE_PROJECT_ID_MISMATCH: got={mcp_evidence.get('project_id')!r} expected={expected_project_id!r}")
+    if expected_project_id and proj_id != expected_project_id:
+        errors.append(f"MCP_PROVENANCE_PROJECT_ID_MISMATCH: got={proj_id!r} expected={expected_project_id!r}")
 
     if mcp_evidence.get("mcp_mode") not in {"headless", "window"}:
         errors.append(f"MCP_PROVENANCE_INVALID_MODE: {mcp_evidence.get('mcp_mode')!r}")
@@ -647,10 +673,14 @@ def validate_mcp_export_provenance(
     if not isinstance(ex_wait, dict) or ex_wait.get("exit_ok") is not True or str(ex_wait.get("status", "")).lower() not in {"completed", "succeeded", "done"}:
         errors.append(f"MCP_PROVENANCE_EXPORT_WAIT_NOT_COMPLETED: {ex_wait!r}")
 
-    # Timestamp ordering check (allow 30s practical clock skew)
+    # Mandatory timestamps on BOTH export_start and export_wait + monotonic order
     ts_start = _parse_iso_ts(ex_start.get("started_at") if isinstance(ex_start, dict) else None)
     ts_wait = _parse_iso_ts(ex_wait.get("completed_at") if isinstance(ex_wait, dict) else None)
     ts_exp = _parse_iso_ts(mcp_evidence.get("exported_at"))
+    if ts_start is None:
+        errors.append("MCP_PROVENANCE_MISSING_TIMESTAMP: export_start.started_at")
+    if ts_wait is None:
+        errors.append("MCP_PROVENANCE_MISSING_TIMESTAMP: export_wait.completed_at")
     if ts_exp is None:
         errors.append("MCP_PROVENANCE_INVALID_EXPORTED_AT")
     if ts_start and ts_wait and (ts_wait - ts_start).total_seconds() < -30.0:
@@ -667,9 +697,10 @@ def validate_mcp_export_provenance(
     elif fp_before != fp_after or fp_before != fp_main:
         errors.append("MCP_PROVENANCE_TIMELINE_FINGERPRINT_DRIFT")
 
-    # Tool trace completeness
+    # Tool trace completeness & per-step project_id consistency
     trace = mcp_evidence.get("tool_trace")
     preview_call_ids: set[str] = set()
+    all_trace_call_ids: set[str] = set()
     if not isinstance(trace, list) or not trace:
         errors.append("MCP_PROVENANCE_MISSING_TOOL_TRACE")
     else:
@@ -680,8 +711,12 @@ def validate_mcp_export_provenance(
             tname = str(entry.get("tool") or "").strip()
             tst = str(entry.get("status") or "").strip().lower()
             cid = str(entry.get("call_id") or "").strip()
+            step_pid = str(entry.get("project_id") or "").strip()
+            if step_pid and proj_id and step_pid != proj_id:
+                errors.append(f"MCP_PROVENANCE_TRACE_PROJECT_ID_MISMATCH: tool={tname} step_project_id={step_pid} expected={proj_id}")
             if tname and cid and tst in {"ok", "completed", "succeeded", "pass"}:
                 ok_tools.add(tname)
+                all_trace_call_ids.add(cid)
                 if tname == "preview_frame":
                     preview_call_ids.add(cid)
         missing_tools = sorted(REQUIRED_LIVE_MCP_TOOLS - ok_tools)
@@ -731,16 +766,40 @@ def validate_mcp_export_provenance(
     else:
         errors.append("MCP_PROVENANCE_MISSING_ALLOWED_EXPORT_ROOT")
 
+    # Raw JSONL transcript verification (required for LIVE_OBSERVED_WITH_RAW_TRANSCRIPT)
+    raw_path = str(mcp_evidence.get("raw_transcript_path") or "").strip()
+    raw_sha = str(mcp_evidence.get("raw_transcript_sha256") or "").strip()
+    raw_verified = False
+    if raw_path or raw_sha:
+        ok_raw, raw_errs = _verify_raw_transcript(raw_path, raw_sha, all_trace_call_ids)
+        if ok_raw:
+            raw_verified = True
+        else:
+            errors.extend(raw_errs)
+
     is_consistent = not errors
-    live_eligible = is_consistent and ev_source == "LIVE_MCP_EXPORT_EVIDENCE"
-    status = (
-        "PASS_LIVE_MCP_PROVENANCE_CONSISTENT"
-        if live_eligible
-        else ("PASS_UNIT_SCHEMA_ONLY_NOT_LIVE" if is_consistent else "FAIL_MCP_PROVENANCE")
-    )
+    if not is_consistent:
+        trust_level = "INVALID"
+        live_eligible = False
+        status = "FAIL_MCP_PROVENANCE"
+    elif ev_source == "UNIT_SIMULATED_PROVENANCE":
+        trust_level = "UNIT_SIMULATED_PROVENANCE"
+        live_eligible = False
+        status = "PASS_UNIT_SCHEMA_ONLY_NOT_LIVE"
+    elif raw_verified:
+        trust_level = "LIVE_OBSERVED_WITH_RAW_TRANSCRIPT"
+        live_eligible = True
+        status = "PASS_LIVE_MCP_PROVENANCE_CONSISTENT"
+    else:
+        trust_level = "SCHEMA_ONLY_UNATTESTED"
+        live_eligible = False
+        status = "PASS_SCHEMA_ONLY_MISSING_RAW_TRANSCRIPT"
+
     return {
         "status": status,
         "evidence_source": ev_source,
+        "evidence_trust_level": trust_level,
+        "raw_transcript_verified": raw_verified,
         "live_evidence_eligible": live_eligible,
         "preview_call_ids": sorted(preview_call_ids),
         "errors": errors,
@@ -751,17 +810,30 @@ def validate_mcp_export_provenance(
 def validate_perceptual_audio_evidence(
     evidence: dict[str, Any] | None,
     actual_mp4_sha: str,
+    edl: dict[str, Any] | None = None,
+    cue_sheet: list[dict[str, Any]] | None = None,
+    exported_at: str | None = None,
 ) -> dict[str, Any]:
-    """Require OWNER_HUMAN playback confirmation, auditory checklist, valid timestamp, and matching MP4 SHA-256."""
-    trust_note = "Structured owner-recorded listening confirmation; field presence alone is not cryptographic biometric proof."
+    """Require OWNER_HUMAN interaction evidence, content-aware auditory checklist, post-export timestamp, and matching SHA-256."""
+    trust_note = "Owner-recorded listening confirmation; JSON assertions are not external cryptographic biometrics."
     if not evidence or not isinstance(evidence, dict):
-        return {"status": "PERCEPTUAL_AUDIO_PENDING", "reason": "NO_OWNER_LISTENING_EVIDENCE", "trust_note": trust_note}
+        return {"status": "PERCEPTUAL_AUDIO_PENDING", "live_human_confirmed": False, "reason": "NO_OWNER_LISTENING_EVIDENCE", "trust_note": trust_note}
 
     reviewer_type = str(evidence.get("reviewer_type") or "").strip().upper()
     if reviewer_type in NON_HUMAN_REVIEWER_TYPES or reviewer_type != "OWNER_HUMAN":
         return {
             "status": "PERCEPTUAL_AUDIO_PENDING",
+            "live_human_confirmed": False,
             "reason": f"NON_HUMAN_OR_UNVERIFIED_REVIEWER_REJECTED:{reviewer_type or 'MISSING'}",
+            "trust_note": trust_note,
+        }
+
+    conf_src = str(evidence.get("confirmation_source") or "").strip().upper()
+    if conf_src != "OWNER_INTERACTION_RECORDED":
+        return {
+            "status": "PERCEPTUAL_AUDIO_PENDING",
+            "live_human_confirmed": False,
+            "reason": f"UNVERIFIED_CONFIRMATION_SOURCE:{conf_src or 'MISSING'}",
             "trust_note": trust_note,
         }
 
@@ -773,30 +845,61 @@ def validate_perceptual_audio_evidence(
     checklist = evidence.get("auditory_checklist")
 
     if verdict == "FAIL" and sha == actual_mp4_sha.lower():
-        return {"status": "FAIL_AUDIO_PERCEPTUAL", "reason": "OWNER_REJECTED_AUDIO", "trust_note": trust_note}
+        return {"status": "FAIL_AUDIO_PERCEPTUAL", "live_human_confirmed": True, "reason": "OWNER_REJECTED_AUDIO", "trust_note": trust_note}
 
     if not reviewer or reviewed_ts is None or not playback_ok:
-        return {"status": "PERCEPTUAL_AUDIO_PENDING", "reason": "INCOMPLETE_OWNER_LISTENING_METADATA", "trust_note": trust_note}
+        return {"status": "PERCEPTUAL_AUDIO_PENDING", "live_human_confirmed": False, "reason": "INCOMPLETE_OWNER_LISTENING_METADATA", "trust_note": trust_note}
     if sha != actual_mp4_sha.lower():
-        return {"status": "PERCEPTUAL_AUDIO_PENDING", "reason": "AUDIO_EVIDENCE_SHA256_MISMATCH", "trust_note": trust_note}
+        return {"status": "PERCEPTUAL_AUDIO_PENDING", "live_human_confirmed": False, "reason": "AUDIO_EVIDENCE_SHA256_MISMATCH", "trust_note": trust_note}
+
+    if exported_at:
+        exp_ts = _parse_iso_ts(exported_at)
+        if exp_ts and (reviewed_ts - exp_ts).total_seconds() < -5.0:
+            return {"status": "PERCEPTUAL_AUDIO_PENDING", "live_human_confirmed": False, "reason": "REVIEWED_BEFORE_EXPORT", "trust_note": trust_note}
 
     if not isinstance(checklist, dict):
-        return {"status": "PERCEPTUAL_AUDIO_PENDING", "reason": "MISSING_AUDITORY_CHECKLIST", "trust_note": trust_note}
+        return {"status": "PERCEPTUAL_AUDIO_PENDING", "live_human_confirmed": False, "reason": "MISSING_AUDITORY_CHECKLIST", "trust_note": trust_note}
+
+    roles = _inspect_audio_plan_roles(edl, cue_sheet)
+    na_forbidden: set[str] = set()
+    if roles["has_vo"]:
+        na_forbidden.update({"intelligibility", "sync"})
+    if roles["has_vo"] and roles["has_bgm"]:
+        na_forbidden.add("ducking")
+    if roles["has_sfx"]:
+        na_forbidden.add("pops_clicks")
+
     missing_items = []
+    na_violations = []
     for k in REQUIRED_AUDITORY_CHECKLIST_KEYS:
         v = checklist.get(k)
-        if v is not True and str(v or "").strip().upper() not in {"OK", "PASS", "N/A"}:
-            missing_items.append(k)
+        norm = str(v or "").strip().upper()
+        if v is True or norm in {"OK", "PASS"}:
+            continue
+        if norm == "N/A":
+            if k in na_forbidden:
+                na_violations.append(k)
+            continue
+        missing_items.append(k)
+
+    if na_violations:
+        return {
+            "status": "PERCEPTUAL_AUDIO_PENDING",
+            "live_human_confirmed": False,
+            "reason": f"CHECKLIST_NA_FORBIDDEN:{sorted(na_violations)}",
+            "trust_note": trust_note,
+        }
     if missing_items:
         return {
             "status": "PERCEPTUAL_AUDIO_PENDING",
+            "live_human_confirmed": False,
             "reason": f"INCOMPLETE_AUDITORY_CHECKLIST:{sorted(missing_items)}",
             "trust_note": trust_note,
         }
 
     if verdict == "PASS":
-        return {"status": "PASS_AUDIO_PERCEPTUAL", "reason": "OWNER_HUMAN_CONFIRMED", "trust_note": trust_note}
-    return {"status": "PERCEPTUAL_AUDIO_PENDING", "reason": f"VERDICT_NOT_PASS:{verdict or 'EMPTY'}", "trust_note": trust_note}
+        return {"status": "PASS_AUDIO_PERCEPTUAL", "live_human_confirmed": True, "reason": "OWNER_HUMAN_CONFIRMED", "trust_note": trust_note}
+    return {"status": "PERCEPTUAL_AUDIO_PENDING", "live_human_confirmed": False, "reason": f"VERDICT_NOT_PASS:{verdict or 'EMPTY'}", "trust_note": trust_note}
 
 
 def write_post_export_qa(report: dict[str, Any], out_path: str | Path) -> None:
@@ -837,9 +940,7 @@ def evaluate_export(
     if release_policy not in {"technical-smoke", "full-creative"}:
         raise ValueError(f"Unsupported release_policy: {release_policy!r}")
 
-    effective_policy = release_policy
-    if allow_technical_release_profile:
-        effective_policy = "technical-smoke"
+    effective_policy = "technical-smoke" if allow_technical_release_profile else release_policy
 
     probe = probe_export(mp4, require_full_decode=(qa_level == "release"))
     if probe.get("status") != "PASS_PROBE_AND_DECODE":
@@ -854,6 +955,7 @@ def evaluate_export(
             "creative_release_gate_pass": False,
             "release_gate_pass": False,
             "live_concat_verified": False,
+            "production_release_pass": False,
             "release_blockers": [probe.get("status", "FAIL_EXPORT_PROBE")],
             "audio_perceptual_status": "PERCEPTUAL_AUDIO_PENDING",
             "probe": probe,
@@ -869,9 +971,12 @@ def evaluate_export(
     bf_check = detect_unintended_blacks_and_freezes(mp4, edl, duration_s=probe.get("duration_s"))
     audio_check = measure_audio_segments(mp4, cue_sheet=cue_sheet, edl=edl, require_audio=require_audio, probe_data=probe)
 
-    percep_detail = {"status": audio_check["audio_perceptual_status"], "reason": "NOT_APPLICABLE"}
+    exported_at_hint = str((mcp_export_evidence or {}).get("exported_at") or "").strip() or None
     if audio_check["audio_signal_status"] == "PASS_AUDIO_SIGNAL":
-        percep_detail = validate_perceptual_audio_evidence(perceptual_audio_evidence, probe["sha256"])
+        percep_detail = validate_perceptual_audio_evidence(
+            perceptual_audio_evidence, probe["sha256"],
+            edl=edl, cue_sheet=cue_sheet, exported_at=exported_at_hint,
+        )
         audio_check["audio_perceptual_status"] = percep_detail["status"]
         audio_check["audio_perceptual_detail"] = percep_detail
 
@@ -908,6 +1013,7 @@ def evaluate_export(
             "creative_release_gate_pass": False,
             "release_gate_pass": False,
             "live_concat_verified": False,
+            "production_release_pass": False,
             "release_provenance_checked": False,
             "trust_boundary": "STANDALONE_MEDIA_DIAGNOSTIC_DOES_NOT_PROVE_CONCAT_ORIGIN",
             "audio_signal_status": audio_check["audio_signal_status"],
@@ -919,7 +1025,6 @@ def evaluate_export(
             "preview_comparisons": preview_results,
         }
 
-    # --- Strict release mode ---
     release_blockers: list[str] = []
     if gate_phase in {"C2", "C4"} and effective_policy == "technical-smoke":
         release_blockers.append(
@@ -930,12 +1035,14 @@ def evaluate_export(
         mcp_export_evidence, probe,
         expected_run_id=expected_run_id, expected_project_id=expected_project_id,
     )
-    if prov_check["status"] == "FAIL_MCP_PROVENANCE" or prov_check["status"] == "RELEASE_BLOCKED_NO_MCP_PROVENANCE":
+    if prov_check["status"] in {"FAIL_MCP_PROVENANCE", "RELEASE_BLOCKED_NO_MCP_PROVENANCE"}:
         release_blockers.extend(prov_check["errors"])
+    elif prov_check["status"] == "PASS_UNIT_SCHEMA_ONLY_NOT_LIVE":
+        release_blockers.append("UNIT_SIMULATED_PROVENANCE_CANNOT_CERTIFY_LIVE_RELEASE")
+    elif prov_check["status"] == "PASS_SCHEMA_ONLY_MISSING_RAW_TRANSCRIPT":
+        release_blockers.append("MISSING_RAW_MCP_TRANSCRIPT_UNATTESTED")
 
     live_evidence_ok = prov_check["live_evidence_eligible"] is True
-    if not live_evidence_ok and prov_check["status"] == "PASS_UNIT_SCHEMA_ONLY_NOT_LIVE":
-        release_blockers.append("UNIT_SIMULATED_PROVENANCE_CANNOT_CERTIFY_LIVE_RELEASE")
 
     if not preview_results:
         release_blockers.append("PREVIEW_MISSING: release mode requires non-empty preview_checks")
@@ -963,10 +1070,9 @@ def evaluate_export(
 
     if release_blockers:
         if (
-            prov_check["status"] == "PASS_UNIT_SCHEMA_ONLY_NOT_LIVE"
-            and technical_ok
+            technical_ok
             and len(release_blockers) == 1
-            and release_blockers[0] == "UNIT_SIMULATED_PROVENANCE_CANNOT_CERTIFY_LIVE_RELEASE"
+            and release_blockers[0] in {"UNIT_SIMULATED_PROVENANCE_CANNOT_CERTIFY_LIVE_RELEASE", "MISSING_RAW_MCP_TRANSCRIPT_UNATTESTED"}
         ):
             overall = "PASS_SCHEMA_CONSISTENCY_UNIT_ONLY"
         else:
@@ -984,6 +1090,13 @@ def evaluate_export(
         technical_e2e_pass = True
         creative_release_pass = True
 
+    live_verified = bool(
+        live_evidence_ok
+        and technical_e2e_pass
+        and prov_check["evidence_trust_level"] == "LIVE_OBSERVED_WITH_RAW_TRANSCRIPT"
+    )
+    prod_pass = bool(live_verified and creative_release_pass)
+
     return {
         "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "qa_level": "release",
@@ -994,7 +1107,8 @@ def evaluate_export(
         "technical_e2e_gate_pass": technical_e2e_pass,
         "creative_release_gate_pass": creative_release_pass,
         "release_gate_pass": creative_release_pass,
-        "live_concat_verified": bool(live_evidence_ok and technical_e2e_pass),
+        "live_concat_verified": live_verified,
+        "production_release_pass": prod_pass,
         "release_provenance_checked": True,
         "release_blockers": release_blockers,
         "audio_signal_status": audio_check["audio_signal_status"],
@@ -1019,7 +1133,7 @@ def _load_preview_manifest(path: Path | None) -> list[dict[str, Any]]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Fail-closed post-export MP4 QA (technical vs release).")
     parser.add_argument("--mp4", type=Path, required=True, help="Actual exported MP4 path.")
-    parser.add_argument("--edl", type=Path, help="Optional EDL JSON for spec & intentional black/freeze/silence checks.")
+    parser.add_argument("--edl", type=Path, help="Optional EDL JSON for spec, audio plan & intentional windows.")
     parser.add_argument("--qa-level", choices=["technical", "release"], default="technical")
     parser.add_argument("--gate-phase", choices=["C1", "C2", "C4"], default="C1")
     parser.add_argument("--release-policy", choices=["technical-smoke", "full-creative"], default="full-creative")
@@ -1028,7 +1142,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--perceptual-evidence", type=Path, help="Optional OWNER_HUMAN listening confirmation JSON.")
     parser.add_argument("--expected-run-id", type=str, help="Expected run_id to reject stale provenance.")
     parser.add_argument("--expected-project-id", type=str, help="Expected project_id to reject stale provenance.")
-    parser.add_argument("--allow-silent", action="store_true", help="Allow silent video when mode/EDL has no speech/VO.")
+    parser.add_argument("--allow-silent", action="store_true", help="Allow silent video ONLY when plan has no mandatory audio.")
     parser.add_argument("--allow-technical-release-profile", action="store_true", help="Deprecated alias for --gate-phase C1 --release-policy technical-smoke.")
     parser.add_argument("--out", type=Path, help="Optional POST_EXPORT_QA.json path.")
     args = parser.parse_args(argv)
@@ -1058,7 +1172,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.qa_level == "release":
         if report["gate_phase"] == "C1" and report["release_policy"] == "technical-smoke":
             return 0 if report["technical_e2e_gate_pass"] else 1
-        return 0 if report["creative_release_gate_pass"] else 1
+        return 0 if report["production_release_pass"] else 1
     return 0 if report["mp4_qa_pass"] else 1
 
 

@@ -57,6 +57,7 @@ REQUIRED_PATHS = [
     "tests/test_platform_adapter.py",
     "tests/test_qa_r1_repro_and_hardening.py",
     "tests/test_qa_r2_regressions.py",
+    "tests/test_qa_r3_regressions.py",
 ]
 
 SECRET_PATTERNS = [

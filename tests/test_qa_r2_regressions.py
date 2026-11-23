@@ -82,6 +82,19 @@ def _build_live_like_provenance(
     proj_dir.mkdir(parents=True, exist_ok=True)
     (proj_dir / "project.concat").write_text("{}", encoding="utf-8")
     mp4_sha = hashlib.sha256(mp4.read_bytes()).hexdigest()
+    trace_rows = [
+        {"tool": "project_create", "call_id": "c1", "project_id": "PRJ_R2_01", "status": "ok", "ts": "2026-11-23T11:59:50Z"},
+        {"tool": "timeline_read", "call_id": "c2", "project_id": "PRJ_R2_01", "status": "ok", "ts": "2026-11-23T11:59:52Z"},
+        {"tool": "preview_frame", "call_id": "c3", "project_id": "PRJ_R2_01", "status": "ok", "ts": "2026-11-23T11:59:54Z"},
+        {"tool": "project_save", "call_id": "c4", "project_id": "PRJ_R2_01", "status": "ok", "ts": "2026-11-23T11:59:56Z"},
+        {"tool": "project_close", "call_id": "c5", "project_id": "PRJ_R2_01", "status": "ok", "ts": "2026-11-23T11:59:57Z"},
+        {"tool": "project_open", "call_id": "c6", "project_id": "PRJ_R2_01", "status": "ok", "ts": "2026-11-23T11:59:58Z"},
+        {"tool": "export_start", "call_id": "c7", "project_id": "PRJ_R2_01", "status": "ok", "ts": "2026-11-23T12:00:00Z"},
+        {"tool": "export_wait", "call_id": "c8", "project_id": "PRJ_R2_01", "status": "ok", "ts": "2026-11-23T12:00:05Z"},
+    ]
+    raw_jsonl = tmp_path / "MCP_RAW_TRACE.jsonl"
+    raw_jsonl.write_text("\n".join(json.dumps(r) for r in trace_rows) + "\n", encoding="utf-8")
+    raw_sha = hashlib.sha256(raw_jsonl.read_bytes()).hexdigest()
     mcp_ev = {
         "evidence_source": evidence_source,
         "project_id": "PRJ_R2_01",
@@ -98,16 +111,9 @@ def _build_live_like_provenance(
         "timeline_fingerprint": "fp_r2_exact",
         "timeline_fingerprint_before_save": "fp_r2_exact",
         "timeline_fingerprint_after_reopen": "fp_r2_exact",
-        "tool_trace": [
-            {"tool": "project_create", "call_id": "c1", "status": "ok", "ts": "2026-11-23T11:59:50Z"},
-            {"tool": "timeline_read", "call_id": "c2", "status": "ok", "ts": "2026-11-23T11:59:52Z"},
-            {"tool": "preview_frame", "call_id": "c3", "status": "ok", "ts": "2026-11-23T11:59:54Z"},
-            {"tool": "project_save", "call_id": "c4", "status": "ok", "ts": "2026-11-23T11:59:56Z"},
-            {"tool": "project_close", "call_id": "c5", "status": "ok", "ts": "2026-11-23T11:59:57Z"},
-            {"tool": "project_open", "call_id": "c6", "status": "ok", "ts": "2026-11-23T11:59:58Z"},
-            {"tool": "export_start", "call_id": "c7", "status": "ok", "ts": "2026-11-23T12:00:00Z"},
-            {"tool": "export_wait", "call_id": "c8", "status": "ok", "ts": "2026-11-23T12:00:05Z"},
-        ],
+        "tool_trace": trace_rows,
+        "raw_transcript_path": str(raw_jsonl),
+        "raw_transcript_sha256": raw_sha,
         "output_path": str(mp4),
         "allowed_export_root": str(exports_dir),
         "sha256": mp4_sha,
@@ -129,6 +135,7 @@ def _valid_owner_listening(mp4_sha: str) -> dict:
     return {
         "reviewer": "machine_owner",
         "reviewer_type": "OWNER_HUMAN",
+        "confirmation_source": "OWNER_INTERACTION_RECORDED",
         "reviewed_at": "2026-11-23T12:10:00Z",
         "mp4_sha256": mp4_sha,
         "playback_confirmed": True,
@@ -430,10 +437,11 @@ def test_p1_d_e_f_r2_18_to_23_duplicates_run_dir_anchors_and_windows_traversal(t
     res_bad_anchor = ve.validate_all(edl, inventory=inv, run_dir=tmp_path, validation_mode="release")
     assert any("CLAIM_EVIDENCE_ANCHOR_NOT_FOUND" in e for e in res_bad_anchor["errors"])
 
-    # Anchor present + nonexistent claim source_id check
+    # Anchor present + structural pass without on-disk integrity (release_ready=False!)
     (tmp_path / "SOURCE_TRUTH.md").write_text("# Truth\n- U001: verified product shot.\n", encoding="utf-8")
     res_good = ve.validate_all(edl, inventory=inv, run_dir=tmp_path, validation_mode="release")
-    assert res_good["status"] == "PASS_EDL_VALID_FOR_RELEASE", res_good["errors"]
+    assert res_good["status"] == "PASS_EDL_STRUCTURAL_ONLY", res_good["errors"]
+    assert res_good["release_ready"] is False
     assert res_good["source_integrity_status"] == "SOURCE_INTEGRITY_NOT_VERIFIED_ON_DISK"
 
     edl_missing_claim_src = copy.deepcopy(edl)
@@ -446,25 +454,27 @@ def test_p1_d_e_f_r2_18_to_23_duplicates_run_dir_anchors_and_windows_traversal(t
     assert ve._is_safe_relative_label(r"sub\..\escape.mp4") is False
     assert ve._is_safe_relative_label(r"\Windows\System32\cmd.exe") is False
 
-    # R2-23: Source integrity gate required for C2 final check
+    # R2-23: Source integrity gate required for C2 final check (with complete per-file SHA-256 verification)
     res_req_int = ve.validate_all(edl, inventory=inv, run_dir=tmp_path, validation_mode="release", require_source_integrity=True)
     assert res_req_int["status"] == "FAIL_EDL_INVALID"
     assert any("MISSING_SOURCE_INTEGRITY_CHECK" in e for e in res_req_int["errors"])
 
-    fake_int_pass = {
+    complete_int_pass = {
+        "checked_at": "2026-11-23T13:00:00Z",
         "status": "PASS_SOURCES_UNCHANGED",
         "entries": [
-            {"source_id": "U001", "status": "UNCHANGED"},
-            {"source_id": "U002", "status": "UNCHANGED"},
-            {"source_id": "U003", "status": "UNCHANGED"},
+            {"source_id": "U001", "root_id": "R01", "relative_label": "a.mp4", "expected_sha256": "a" * 64, "actual_sha256": "a" * 64, "status": "UNCHANGED"},
+            {"source_id": "U002", "root_id": "R01", "relative_label": "b.mp4", "expected_sha256": "b" * 64, "actual_sha256": "b" * 64, "status": "UNCHANGED"},
+            {"source_id": "U003", "root_id": "R01", "relative_label": "c.wav", "expected_sha256": "c" * 64, "actual_sha256": "c" * 64, "status": "UNCHANGED"},
         ],
     }
     res_int_ok = ve.validate_all(
         edl, inventory=inv, run_dir=tmp_path, validation_mode="release",
-        source_integrity_report=fake_int_pass, require_source_integrity=True,
+        source_integrity_report=complete_int_pass, require_source_integrity=True,
     )
     assert res_int_ok["status"] == "PASS_EDL_VALID_FOR_RELEASE", res_int_ok["errors"]
     assert res_int_ok["source_integrity_status"] == "PASS_SOURCE_INTEGRITY"
+    assert res_int_ok["release_ready"] is True
 
 
 def test_r2_15_26_31_permissions_incomplete_bad_ffmpeg_and_missing_binary(

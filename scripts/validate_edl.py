@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
-"""Fail-closed EDL validator against verified source inventory, rights, claims, frame grid, and mode (QA.R2).
+"""Fail-closed EDL validator separating draft, structural, and release (with on-disk source integrity).
 
-- Detects duplicate source_id / asset_id conflicts in inventory & license ledger (never silent last-wins).
-- Requires run_dir (or verified_evidence_bundle) for resolving VERIFIED_WITH_EVIDENCE claims in release mode,
-  verifies evidence file non-emptiness & anchor/fragment presence, and checks claim source_id against inventory.
-- Rejects cross-platform path traversals (both '/' and '\\', drive letters, NUL bytes).
-- Requires archived license_evidence_path for LICENSED and explicit code + model/weights/voice provenance for GENERATED.
-- Separates structural EDL eligibility from on-disk source integrity (PASS_SOURCE_INTEGRITY via verify_source_hashes.py).
+Validation modes:
+- draft: Planning-only check without full inventory; blocks ANALYSIS_ONLY/UNKNOWN_RIGHTS/UNKNOWN_REMOVE.
+  Returns PASS_EDL_DRAFT_ONLY (release_ready=False).
+- structural: Full metadata, rights, claim anchor, and frame-grid validation without requiring on-disk
+  source hash verification. Returns PASS_EDL_STRUCTURAL_ONLY (release_ready=False).
+- release (default): Requires structural validation PLUS verified per-file on-disk source integrity
+  (from verify_source_hashes.py matching every referenced source_id, relative_label, and expected/actual
+  SHA-256 against inventory). On C2/C4 (or require_source_integrity=True), missing/invalid integrity
+  is a hard FAIL_EDL_INVALID; on C1 without integrity report, caps at PASS_EDL_STRUCTURAL_ONLY with
+  release_ready=False and CLI exit 1 so release automation never confuses structural with final release.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import datetime as dt
 import json
 import math
 import re
@@ -44,6 +49,21 @@ def _is_strict_int(val: Any) -> bool:
     return isinstance(val, int) and not isinstance(val, bool)
 
 
+def _parse_iso_ts(raw: Any) -> dt.datetime | None:
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    s = raw.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        parsed = dt.datetime.fromisoformat(s)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return parsed
+    except ValueError:
+        return None
+
+
 def _parse_fps(fps_value: Any) -> Fraction:
     if isinstance(fps_value, bool) or fps_value is None:
         raise ValueError(f"Invalid FPS type: {type(fps_value).__name__}")
@@ -62,7 +82,6 @@ def _parse_fps(fps_value: Any) -> Fraction:
 
 
 def _is_safe_relative_label(label: str) -> bool:
-    """Reject absolute paths, POSIX/Windows '..' traversal, drive prefixes, and NUL/control chars cross-platform."""
     if not label or not isinstance(label, str):
         return False
     if "\x00" in label or any(ord(ch) < 32 for ch in label):
@@ -74,14 +93,12 @@ def _is_safe_relative_label(label: str) -> bool:
     parts = re.split(r"[/\\]+", label)
     if ".." in parts:
         return False
-    p = Path(label)
-    if p.is_absolute():
+    if Path(label).is_absolute():
         return False
     return True
 
 
 def load_inventory_checked(path: str | Path | None) -> tuple[dict[str, dict[str, Any]], list[str]]:
-    """Load SOURCE_INVENTORY.csv/.json and fail closed on duplicate source_id or conflicting rows."""
     if not path:
         return {}, []
     p = Path(path)
@@ -111,7 +128,6 @@ def load_inventory_checked(path: str | Path | None) -> tuple[dict[str, dict[str,
 
 
 def load_ledger_checked(path: str | Path | None) -> tuple[dict[str, dict[str, Any]], list[str]]:
-    """Load LICENSE_LEDGER.csv and fail closed on duplicate asset_id keys."""
     if not path:
         return {}, []
     p = Path(path)
@@ -160,8 +176,7 @@ def validate_frame_grid(edl: dict[str, Any], output_fps: Any = None) -> list[str
     except (ValueError, ZeroDivisionError):
         return [f"INVALID_RATIONAL_FPS: {fps_raw}"]
 
-    w = spec.get("width")
-    h = spec.get("height")
+    w, h = spec.get("width"), spec.get("height")
     if w is not None and (not _is_strict_int(w) or w <= 0):
         errors.append(f"INVALID_OUTPUT_WIDTH: {w!r}")
     if h is not None and (not _is_strict_int(h) or h <= 0):
@@ -172,8 +187,7 @@ def validate_frame_grid(edl: dict[str, Any], output_fps: Any = None) -> list[str
             errors.append("INVALID_SHOT_RECORD_TYPE")
             continue
         sid = shot.get("shot_id", "<missing>")
-        oin = shot.get("output_in_frame")
-        oout = shot.get("output_out_frame")
+        oin, oout = shot.get("output_in_frame"), shot.get("output_out_frame")
         if not _is_strict_int(oin) or not _is_strict_int(oout):
             errors.append(f"NON_INTEGER_FRAME_BOUNDS: {sid}")
             continue
@@ -192,8 +206,7 @@ def validate_frame_grid(edl: dict[str, Any], output_fps: Any = None) -> list[str
             errors.append("INVALID_AUDIO_RECORD_TYPE")
             continue
         cid = ac.get("clip_id", "<audio>")
-        oin = ac.get("output_in_frame")
-        oout = ac.get("output_out_frame")
+        oin, oout = ac.get("output_in_frame"), ac.get("output_out_frame")
         if oin is not None or oout is not None:
             if not _is_strict_int(oin) or not _is_strict_int(oout) or oin < 0 or oout <= oin:
                 errors.append(f"INVALID_AUDIO_FRAME_BOUNDS: {cid} ({oin}..{oout})")
@@ -208,6 +221,7 @@ def validate_source_ranges(
 ) -> list[str]:
     errors: list[str] = []
     seen_ids: set[str] = set()
+    strict_inv = validation_mode in {"release", "structural"}
     try:
         fps = _parse_fps((edl.get("output_spec") or {}).get("timeline_fps", "30/1"))
         if fps <= 0:
@@ -232,10 +246,7 @@ def validate_source_ranges(
             errors.append(f"INVALID_SOURCE_ID_TYPE: {sid} -> {src_id!r}")
             continue
 
-        sin = shot.get("source_in_s")
-        sout = shot.get("source_out_s")
-        speed_raw = shot.get("speed", 1.0)
-
+        sin, sout, speed_raw = shot.get("source_in_s"), shot.get("source_out_s"), shot.get("speed", 1.0)
         if not _is_finite_number(sin) or not _is_finite_number(sout) or float(sin) < 0.0 or float(sout) <= float(sin):
             errors.append(f"INVALID_SOURCE_RANGE: {sid} ({sin!r}..{sout!r})")
             continue
@@ -259,11 +270,10 @@ def validate_source_ranges(
                     errors.append(f"INVALID_SOURCE_DURATION: {sid} ({src_id}) duration_s={src_meta.get('duration_s')!r}")
                 elif sout_f > dur + 0.02:
                     errors.append(f"SOURCE_OUT_EXCEEDS_DURATION: {sid} source_out_s={sout_f} > duration_s={dur}")
-        elif validation_mode == "release" or inventory:
+        elif strict_inv or inventory:
             errors.append(f"SOURCE_ID_NOT_IN_INVENTORY: {sid} references {src_id}")
 
-        oin = shot.get("output_in_frame")
-        oout = shot.get("output_out_frame")
+        oin, oout = shot.get("output_in_frame"), shot.get("output_out_frame")
         if _is_strict_int(oin) and _is_strict_int(oout) and oout > oin:
             expected_dur = float((oout - oin) / fps)
             actual_src_dur = (sout_f - sin_f) / speed
@@ -281,8 +291,7 @@ def validate_source_ranges(
         if not isinstance(src_id, str) or not src_id.strip():
             errors.append(f"INVALID_AUDIO_SOURCE_ID: {cid}")
             continue
-        sin = ac.get("source_in_s")
-        sout = ac.get("source_out_s")
+        sin, sout = ac.get("source_in_s"), ac.get("source_out_s")
         if not _is_finite_number(sin) or not _is_finite_number(sout) or float(sin) < 0.0 or float(sout) <= float(sin):
             errors.append(f"INVALID_AUDIO_RANGE: {cid} ({sin!r}..{sout!r})")
             continue
@@ -295,7 +304,7 @@ def validate_source_ranges(
                 errors.append(f"INVALID_AUDIO_SOURCE_DURATION: {cid} ({src_id})")
             elif float(sout) > dur + 0.02:
                 errors.append(f"AUDIO_OUT_EXCEEDS_DURATION: {cid} source_out_s={sout} > duration_s={dur}")
-        elif validation_mode == "release" or inventory:
+        elif strict_inv or inventory:
             errors.append(f"SOURCE_ID_NOT_IN_INVENTORY: {cid} references {src_id}")
 
     return errors
@@ -320,8 +329,7 @@ def validate_timeline_coverage(edl: dict[str, Any]) -> list[str]:
         errors.append(f"TIMELINE_START_GAP: first V1 shot starts at frame {v1_sorted[0]['output_in_frame']}")
 
     for prev, cur in zip(v1_sorted, v1_sorted[1:]):
-        p_out = prev["output_out_frame"]
-        c_in = cur["output_in_frame"]
+        p_out, c_in = prev["output_out_frame"], cur["output_in_frame"]
         if c_in > p_out:
             errors.append(f"TIMELINE_GAP: frames {p_out}..{c_in} between {prev.get('shot_id')} and {cur.get('shot_id')}")
         elif c_in < p_out:
@@ -330,7 +338,6 @@ def validate_timeline_coverage(edl: dict[str, Any]) -> list[str]:
                 errors.append(f"UNINTENDED_OVERLAP: {prev.get('shot_id')} and {cur.get('shot_id')} overlap without dissolve intent")
 
     total_v1_end = max(s["output_out_frame"] for s in v1_sorted)
-
     for s in shots:
         if s.get("track", "V1") == "V1":
             continue
@@ -369,9 +376,10 @@ def validate_asset_rights(
 ) -> list[str]:
     errors: list[str] = []
     ledger = license_ledger or {}
+    strict_inv = validation_mode in {"release", "structural"}
 
-    if validation_mode == "release" and not inventory:
-        return ["MISSING_SOURCE_INVENTORY: release validation requires an independently probed SOURCE_INVENTORY"]
+    if strict_inv and not inventory:
+        return ["MISSING_SOURCE_INVENTORY: structural/release validation requires an independently probed SOURCE_INVENTORY"]
 
     def _check_ledger_evidence(label: str, src_id: str, entry: dict[str, Any], is_generated: bool) -> None:
         if entry.get("decision") != "APPROVED" or entry.get("commercial_use_allowed") != "YES":
@@ -395,7 +403,7 @@ def validate_asset_rights(
                     except ValueError:
                         errors.append(f"UNSAFE_LICENSE_EVIDENCE_PATH: {label} ({src_id}) escapes run_dir")
                     else:
-                        if not target.exists() or target.stat().st_size == 0:
+                        if not target.exists() or not target.is_file() or target.stat().st_size == 0:
                             errors.append(f"LICENSE_EVIDENCE_FILE_NOT_FOUND: {label} ({src_id}) -> {lic_ev}")
 
         if is_generated and not _has_separate_generated_licenses(entry):
@@ -408,7 +416,7 @@ def validate_asset_rights(
             errors.append(f"INVALID_SOURCE_ID: {label}")
             return
 
-        if validation_mode == "release":
+        if strict_inv:
             if src_id not in inventory:
                 errors.append(f"SOURCE_ID_NOT_IN_INVENTORY: {label} ({src_id})")
                 return
@@ -440,7 +448,7 @@ def validate_asset_rights(
             errors.append(f"FORBIDDEN_RIGHTS_IN_FINAL_EDL: {label} ({src_id}) has rights={effective_rights}")
             return
 
-        if validation_mode == "release":
+        if strict_inv:
             if effective_rights == "LICENSED":
                 entry = ledger.get(src_id)
                 if not entry:
@@ -480,6 +488,7 @@ def validate_claim_evidence(
     errors: list[str] = []
     inv = inventory or {}
     bundle = verified_evidence_bundle or {}
+    strict_mode = validation_mode in {"release", "structural"}
     claim_list = claims if claims is not None else edl.get("claims", [])
     edl_mode = str(edl.get("mode") or "").lower()
     claim_map: dict[str, dict[str, Any]] = {}
@@ -496,7 +505,7 @@ def validate_claim_evidence(
                 errors.append(f"CLAIM_EVIDENCE_ANCHOR_NOT_FOUND: {cid} anchor={anchor!r} missing in {rel_file}")
             return
         if run_dir is None:
-            if validation_mode == "release":
+            if strict_mode:
                 errors.append(f"MISSING_RUN_DIR_FOR_CLAIM_EVIDENCE: {cid} cannot verify {rel_file!r} without run_dir")
             return
 
@@ -565,13 +574,13 @@ def validate_claim_evidence(
             if frag and frag in inv:
                 if str(inv[frag].get("rights_tag", "")).strip() in BLOCKED_RIGHTS:
                     errors.append(f"CLAIM_CITES_ANALYSIS_ONLY_SOURCE: {cid} cites blocked source {frag}")
-            elif frag and validation_mode == "release" and inv and re.match(r"^[A-Z]{1,4}\d{1,4}$", frag):
+            elif frag and strict_mode and inv and re.match(r"^[A-Z]{1,4}\d{1,4}$", frag):
                 errors.append(f"CLAIM_EVIDENCE_SOURCE_MISSING: {cid} cites source {frag} not in inventory")
             _resolve_and_check_content(cid, file_part, frag)
 
         cited_src = str(c.get("source_id") or "").strip()
         if cited_src:
-            if validation_mode == "release" and cited_src not in inv:
+            if strict_mode and cited_src not in inv:
                 errors.append(f"CLAIM_SOURCE_ID_NOT_IN_INVENTORY: {cid} source_id={cited_src}")
             elif cited_src in inv and str(inv[cited_src].get("rights_tag", "")).strip() in BLOCKED_RIGHTS:
                 errors.append(f"CLAIM_CITES_ANALYSIS_ONLY_SOURCE: {cid} source_id={cited_src}")
@@ -585,7 +594,7 @@ def validate_claim_evidence(
             elif claim_map[cid].get("status") == "UNKNOWN_REMOVE":
                 errors.append(f"SHOT_USES_REMOVED_CLAIM: {shot.get('shot_id')} -> {cid}")
             elif (
-                validation_mode == "release"
+                strict_mode
                 and edl_mode in COMMERCIAL_MODES
                 and claim_map[cid].get("status") == "PLAUSIBLE_NOT_ADVERTISABLE"
             ):
@@ -646,33 +655,82 @@ def validate_mode_constraints(
 
 def _evaluate_source_integrity(
     edl: dict[str, Any],
+    inventory: dict[str, dict[str, Any]],
     source_integrity_report: dict[str, Any] | None,
     require_source_integrity: bool,
-) -> tuple[str, list[str]]:
+) -> tuple[str, bool, list[str]]:
+    """Verify per-file on-disk SHA-256 report from verify_source_hashes.py against EDL & inventory."""
     if not source_integrity_report:
         if require_source_integrity:
-            return "FAIL_SOURCE_INTEGRITY_MISSING", [
-                "MISSING_SOURCE_INTEGRITY_CHECK: C2/final gate requires verify_source_hashes.py pre/post check"
-            ]
-        return "SOURCE_INTEGRITY_NOT_VERIFIED_ON_DISK", []
+            return (
+                "FAIL_SOURCE_INTEGRITY_MISSING",
+                False,
+                ["MISSING_SOURCE_INTEGRITY_CHECK: release gate requires verify_source_hashes.py pre/post check"],
+            )
+        return "SOURCE_INTEGRITY_NOT_VERIFIED_ON_DISK", False, []
+
+    errors: list[str] = []
+    if not isinstance(source_integrity_report, dict):
+        return "FAIL_SOURCE_INTEGRITY_INVALID", False, ["SOURCE_INTEGRITY_REPORT_INVALID_TYPE"]
+
+    if _parse_iso_ts(source_integrity_report.get("checked_at")) is None:
+        errors.append("SOURCE_INTEGRITY_MISSING_CHECKED_AT")
 
     if source_integrity_report.get("status") != "PASS_SOURCES_UNCHANGED":
-        return "FAIL_SOURCE_INTEGRITY_DRIFT", ["SOURCE_INTEGRITY_DRIFT_OR_FAILURE"]
+        errors.append("SOURCE_INTEGRITY_DRIFT_OR_FAILURE")
 
-    verified_ids = {
-        str(e.get("source_id"))
-        for e in (source_integrity_report.get("entries") or [])
-        if isinstance(e, dict) and e.get("status") == "UNCHANGED"
-    }
+    entries = source_integrity_report.get("entries")
+    if not isinstance(entries, list) or not entries:
+        errors.append("SOURCE_INTEGRITY_EMPTY_ENTRIES")
+        return "FAIL_SOURCE_INTEGRITY_INVALID", False, errors
+
+    verified_by_id: dict[str, dict[str, Any]] = {}
+    for e in entries:
+        if not isinstance(e, dict):
+            errors.append("SOURCE_INTEGRITY_ENTRY_INVALID_TYPE")
+            continue
+        sid = str(e.get("source_id") or "").strip()
+        if not sid:
+            errors.append("SOURCE_INTEGRITY_ENTRY_MISSING_ID")
+            continue
+        if sid in verified_by_id:
+            errors.append(f"SOURCE_INTEGRITY_DUPLICATE_ID: {sid}")
+            continue
+        verified_by_id[sid] = e
+
     needed_ids = set()
     for grp in (edl.get("shots", []), edl.get("audio_tracks", []), edl.get("overlays", [])):
         for item in grp:
             if isinstance(item, dict) and item.get("source_id"):
                 needed_ids.add(str(item["source_id"]))
-    missing = sorted(needed_ids - verified_ids)
-    if missing:
-        return "FAIL_SOURCE_INTEGRITY_INCOMPLETE", [f"SOURCE_INTEGRITY_MISSING_IDS: {missing}"]
-    return "PASS_SOURCE_INTEGRITY", []
+
+    for sid in sorted(needed_ids):
+        e = verified_by_id.get(sid)
+        if not e:
+            errors.append(f"SOURCE_INTEGRITY_MISSING_ID: {sid}")
+            continue
+        if e.get("status") != "UNCHANGED":
+            errors.append(f"SOURCE_INTEGRITY_NOT_UNCHANGED: {sid} status={e.get('status')!r}")
+        exp_sha = str(e.get("expected_sha256") or "").strip().lower()
+        act_sha = str(e.get("actual_sha256") or "").strip().lower()
+        rel_lbl = str(e.get("relative_label") or "").strip()
+        if not SHA256_RE.match(exp_sha) or not SHA256_RE.match(act_sha) or not rel_lbl:
+            errors.append(f"SOURCE_INTEGRITY_ENTRY_INCOMPLETE: {sid} requires valid expected_sha256, actual_sha256, and relative_label")
+            continue
+        if exp_sha != act_sha:
+            errors.append(f"SOURCE_INTEGRITY_SHA_MISMATCH: {sid} expected!=actual")
+        inv_meta = inventory.get(sid)
+        if inv_meta:
+            inv_sha = str(inv_meta.get("sha256") or "").strip().lower()
+            if inv_sha and act_sha != inv_sha:
+                errors.append(f"SOURCE_INTEGRITY_SHA_MISMATCH: {sid} report SHA != inventory SHA")
+            inv_rel = str(inv_meta.get("relative_label") or "").strip()
+            if inv_rel and rel_lbl != inv_rel:
+                errors.append(f"SOURCE_INTEGRITY_LABEL_MISMATCH: {sid} report={rel_lbl!r} inventory={inv_rel!r}")
+
+    if errors:
+        return "FAIL_SOURCE_INTEGRITY_INVALID", False, errors
+    return "PASS_SOURCE_INTEGRITY", True, []
 
 
 def validate_all(
@@ -686,12 +744,22 @@ def validate_all(
     require_source_integrity: bool = False,
     loader_errors: list[str] | None = None,
     validation_mode: str = "release",
+    gate_phase: str = "C1",
 ) -> dict[str, Any]:
-    if validation_mode not in {"release", "draft"}:
+    if validation_mode not in {"release", "structural", "draft"}:
         raise ValueError(f"Unsupported validation_mode: {validation_mode!r}")
+    if gate_phase not in {"C1", "C2", "C4"}:
+        raise ValueError(f"Unsupported gate_phase: {gate_phase!r}")
 
     inv = inventory or {}
-    int_status, int_errors = _evaluate_source_integrity(edl, source_integrity_report, require_source_integrity)
+    # C2/C4 in release mode ALWAYS require verified on-disk source integrity (fail-closed!)
+    effective_require_integrity = bool(
+        require_source_integrity or (validation_mode == "release" and gate_phase in {"C2", "C4"})
+    )
+    int_status, int_pass, int_errors = _evaluate_source_integrity(
+        edl, inv, source_integrity_report, require_source_integrity=effective_require_integrity
+    )
+
     checks = {
         "loader_integrity": list(loader_errors or []),
         "frame_grid": validate_frame_grid(edl),
@@ -705,18 +773,38 @@ def validate_all(
         "mode_constraints": validate_mode_constraints(edl, inv, brief),
         "source_integrity": int_errors,
     }
+    structural_errors = [
+        err for k, errs in checks.items() if k != "source_integrity" for err in errs
+    ]
     all_errors = [err for errs in checks.values() for err in errs]
+    structural_pass = len(structural_errors) == 0
+
     if all_errors:
         status = "FAIL_EDL_INVALID"
-    elif validation_mode == "release":
-        status = "PASS_EDL_VALID_FOR_RELEASE"
-    else:
+        release_ready = False
+    elif validation_mode == "draft":
         status = "PASS_EDL_DRAFT_ONLY"
+        release_ready = False
+    elif validation_mode == "structural":
+        status = "PASS_EDL_STRUCTURAL_ONLY"
+        release_ready = False
+    else:
+        # validation_mode == "release": NEVER emit PASS_EDL_VALID_FOR_RELEASE unless source_integrity_pass is True!
+        if int_pass:
+            status = "PASS_EDL_VALID_FOR_RELEASE"
+            release_ready = True
+        else:
+            status = "PASS_EDL_STRUCTURAL_ONLY"
+            release_ready = False
 
     return {
         "validation_mode": validation_mode,
+        "gate_phase": gate_phase,
         "status": status,
-        "release_ready_edl": status == "PASS_EDL_VALID_FOR_RELEASE",
+        "structural_pass": structural_pass,
+        "source_integrity_pass": int_pass,
+        "release_ready": release_ready,
+        "release_ready_edl": release_ready,
         "source_integrity_status": int_status,
         "claim_review_note": "STRUCTURAL_EVIDENCE_CHECK_ONLY_HUMAN_FACT_REVIEW_SEPARATE",
         "ownership_note": "OWNER_PROVENANCE_AND_SHA256_NOT_CRYPTOGRAPHIC_LEGAL_OWNERSHIP",
@@ -727,14 +815,15 @@ def validate_all(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Fail-closed EDL validator before Concat MCP execution.")
+    parser = argparse.ArgumentParser(description="Fail-closed EDL validator (draft / structural / release).")
     parser.add_argument("--edl", type=Path, required=True)
-    parser.add_argument("--inventory", type=Path, help="SOURCE_INVENTORY.csv or JSON (required for release mode).")
+    parser.add_argument("--inventory", type=Path, help="SOURCE_INVENTORY.csv or JSON (required for structural/release).")
     parser.add_argument("--license-ledger", type=Path, help="LICENSE_LEDGER.csv (required for LICENSED/GENERATED assets).")
-    parser.add_argument("--run-dir", type=Path, help="Run directory for resolving claim/license evidence paths (required for release claims).")
-    parser.add_argument("--source-integrity", type=Path, help="Optional JSON report from verify_source_hashes.py.")
-    parser.add_argument("--require-source-integrity", action="store_true", help="Require PASS_SOURCE_INTEGRITY (mandatory for C2/final).")
-    parser.add_argument("--validation-mode", choices=["release", "draft"], default="release")
+    parser.add_argument("--run-dir", type=Path, help="Run directory for resolving claim/license evidence paths.")
+    parser.add_argument("--source-integrity", type=Path, help="JSON report from verify_source_hashes.py (required for release).")
+    parser.add_argument("--require-source-integrity", action="store_true", help="Explicitly fail if source integrity missing.")
+    parser.add_argument("--validation-mode", choices=["release", "structural", "draft"], default="release")
+    parser.add_argument("--gate-phase", choices=["C1", "C2", "C4"], default="C1")
     parser.add_argument("--out", type=Path, help="Optional validation JSON output.")
     args = parser.parse_args(argv)
 
@@ -749,12 +838,15 @@ def main(argv: list[str] | None = None) -> int:
         require_source_integrity=args.require_source_integrity,
         loader_errors=inv_errs + led_errs,
         validation_mode=args.validation_mode,
+        gate_phase=args.gate_phase,
     )
 
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(json.dumps(result, indent=2, ensure_ascii=False))
+    if args.validation_mode == "release":
+        return 0 if result["release_ready"] else 1
     return 0 if result["error_count"] == 0 else 1
 
 

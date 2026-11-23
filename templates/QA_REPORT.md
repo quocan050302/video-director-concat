@@ -25,12 +25,12 @@
 | Unit / Negative / Regression (2x) | `CODE_QUALITY` | `<PASS / FAIL>` | `logs/pytest_run_1.txt`, `logs/pytest_run_2.txt` | `<deterministic counts>` |
 | M0 / C0 Env & Disk Guard | `RUNTIME` | `<PASS / BLOCKED_LOW_DISK / BLOCKED_ENV>` | `ENV_MATRIX.json` | `<decoupled OS/disk/binary/QA tools>` |
 | C0 Live MCP (`--mcp headless`) | `RUNTIME` | `<PASS / BLOCKED_ENV / FAIL>` | `CONCAT_CAPABILITY_MATRIX.json` | `<live initialize + tools/list + concat_version>` |
-| Layer 1 Release EDL & Rights (`--validation-mode release --run-dir ...`) | `RUNTIME` | `<PASS_EDL_VALID_FOR_RELEASE / FAIL>` | `SOURCE_INVENTORY.csv`, `EDL.json`, `LICENSE_LEDGER.csv` | `<duplicate-free, anchored claims, archived licenses>` |
+| Layer 1 Release EDL & Rights (`--validation-mode release --run-dir ... --source-integrity ...`) | `RUNTIME` | `<PASS_EDL_VALID_FOR_RELEASE / FAIL>` | `SOURCE_INVENTORY.csv`, `EDL.json`, `LICENSE_LEDGER.csv`, `SOURCE_INTEGRITY.json` | `<release_ready=true, per-file SHA256 verified, duplicate-free, anchored claims, archived licenses>` |
 | Layer 2 Live `preview_frame` & Critic | `RUNTIME` | `<PASS / BLOCKED_ENV / FAIL>` | `PREVIEW_MANIFEST.json`, `CRITIC_NOTES.md` | `<CONCAT_MCP_PREVIEW_FRAME origin + SSIM/PSNR>` |
 | Native Save / Reopen Fingerprint | `RUNTIME` | `<PASS / BLOCKED_ENV / FAIL>` | `MCP_EXPORT_EVIDENCE.json` | `<before_save == after_reopen>` |
-| Layer 3 Concat MP4 Export (`--qa-level release`) | `RUNTIME` | `<PASS_END_TO_END_EXPORT_QA / C1_TECHNICAL_E2E_PASS_PERCEPTUAL_PENDING / PENDING_PERCEPTUAL_AUDIO / BLOCKED_ENV / FAIL>` | `POST_EXPORT_QA.json`, `MCP_EXPORT_EVIDENCE.json` | `<LIVE_MCP_EXPORT_EVIDENCE + matched job_ids + full decode>` |
-| Audio Signal QA (`PASS_AUDIO_SIGNAL`) | `RUNTIME` | `<PASS / MEASUREMENT_INCOMPLETE / FAIL_UNEXPECTED_AUDIO_DROPOUT / FAIL_AUDIO_CLIP / BLOCKED_ENV>` | `POST_EXPORT_QA.json` | `<volumedetect + ebur128 LUFS/true peak + EOF silence>` |
-| Owner Human Perceptual Audio | `RUNTIME` | `<PASS_AUDIO_PERCEPTUAL / PERCEPTUAL_AUDIO_PENDING>` | `<OWNER_HUMAN JSON matching MP4 SHA256>` | `<rejects AGENT/BOT self-attestation>` |
+| Layer 3 Concat MP4 Export (`--qa-level release`) | `RUNTIME` | `<PASS_END_TO_END_EXPORT_QA / C1_TECHNICAL_E2E_PASS_PERCEPTUAL_PENDING / PENDING_PERCEPTUAL_AUDIO / BLOCKED_ENV / FAIL>` | `POST_EXPORT_QA.json`, `MCP_EXPORT_EVIDENCE.json`, `MCP_RAW_TRACE.jsonl` | `<evidence_trust_level=LIVE_OBSERVED_WITH_RAW_TRANSCRIPT, live_concat_verified=true, matched job_ids + timestamps + project_id trace + full decode>` |
+| Audio Signal QA (`PASS_AUDIO_SIGNAL`) | `RUNTIME` | `<PASS / MEASUREMENT_INCOMPLETE / FAIL_UNEXPECTED_AUDIO_DROPOUT / FAIL_AUDIO_CLIP / BLOCKED_ENV>` | `POST_EXPORT_QA.json` | `<audio_expected_by_plan() covers VO/BGM/SFX/ambience; volumedetect + ebur128 LUFS/true peak + EOF silence>` |
+| Owner Human Perceptual Audio | `RUNTIME` | `<PASS_AUDIO_PERCEPTUAL / PERCEPTUAL_AUDIO_PENDING>` | `<OWNER_HUMAN JSON matching MP4 SHA256>` | `<requires OWNER_INTERACTION_RECORDED, reviewed_at >= exported_at, content-aware non-N/A checklist; rejects AGENT/BOT self-attestation>` |
 | Source Originals Unchanged | `CODE_QUALITY` / `RUNTIME` | `<PASS_SOURCE_INTEGRITY / FAIL>` | `verify_source_hashes.py` | `<SHA256 pre == post>` |
 
 ## Defects & Open Blockers

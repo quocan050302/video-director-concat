@@ -1,0 +1,32 @@
+# Code-quality CI ONLY: validates static package integrity and deterministic Python unit/negative tests.
+# NOTE: Passing this workflow proves CODE_QUALITY only; it does NOT execute live Concat MCP (C0/C1/C2/C4).
+name: Python Code QA (Static & Unit Regression)
+
+on:
+  push:
+    branches: [QA, master, main]
+  pull_request:
+
+jobs:
+  code-qa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install ffmpeg & pytest
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+          python3 -m pip install --quiet pytest
+      - name: Compile & Static Skill Package Check
+        run: |
+          python3 -m compileall -q scripts tests
+          python3 scripts/check_skill_package.py --skill-dir .
+      - name: Deterministic Unit & Negative Regression (2x)
+        env:
+          PYTHONHASHSEED: "42"
+        run: |
+          python3 -m pytest -v tests/
+          python3 -m pytest -v tests/

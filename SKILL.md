@@ -16,7 +16,7 @@ Antigravity acts as the single accountable **Creative Director, Storyboard Artis
    - **Windows (`Windows`, `x86_64`)**: Load [references/platform_windows.md](./references/platform_windows.md) for `.exe` discovery, `;`-separated `CONCAT_MCP_ROOTS`, SmartScreen/UAC human gates, and process-isolated media probing.
 4. **Zero-Paid-API by Default**: Never call paid APIs (ElevenLabs, OpenAI/Gemini paid media APIs, paid stock, cloud renders) without explicit user approval and a written cost estimate (`STOP_FOR_COST_APPROVAL`).
 5. **Source & System Safety**: Treat user sources as strictly read-only. Never touch existing CapCut projects, skills, or plugins. Never bypass Gatekeeper/SIP/TCC/SmartScreen/UAC, never delete `concat.lock`, never run `sudo` or `xattr -dr com.apple.quarantine` without explicit owner approval, and never invent PASS statuses.
-6. **Honest State Machine**: Report exact verified gate states (`SKILL_STATIC_READY`, `SKILL_ACTIVE`, `MCP_CONNECTED`, `C1_MP4_QA_PASS`, `C2_FINAL_QA_PASS`, `READY_FOR_BATCH_PRODUCTION`). If blocked, stop cleanly at the blocker with reproduction evidence and a minimal [templates/HUMAN_GATE.md](./templates/HUMAN_GATE.md).
+6. **Honest State Machine**: Report exact verified gate states (`PASS_SKILL_STATIC_READY`, `PASS_CODE_HARDENING`, `BLOCKED_ENV_CONCAT_BINARY_MISSING`, `PASS_C0_MCP_CONNECTED`, `C1_TECHNICAL_E2E_PASS_PERCEPTUAL_PENDING`, `PASS_C1_NATIVE_EXPORT`, `PASS_C2_CREATIVE_RELEASE`, `READY_FOR_BATCH_PRODUCTION`). Never conflate offline code checks or synthetic tests with live Concat runtime PASS. If blocked, stop cleanly at the blocker with reproduction evidence and a minimal [templates/HUMAN_GATE.md](./templates/HUMAN_GATE.md).
 
 ## Input Contract (Minimal to Full)
 
@@ -63,7 +63,7 @@ Execute sequentially; never promote a gate without its required evidence:
    - Read [references/02_creative_direction_and_scripts.md](./references/02_creative_direction_and_scripts.md).
 4. **Phase P3 — Storyboard, Frame-Accurate EDL & MCP Action Plan**
    - Produce `STORYBOARD.csv`, editor-independent `EDL.json`, and `CONCAT_MCP_ACTION_PLAN.json` mapped strictly to discovered `tools/list` schemas.
-   - Validate with `python3 scripts/validate_edl.py` (must exit 0 before MCP execution).
+   - Validate with `python3 scripts/validate_edl.py --validation-mode release --gate-phase C2 --run-dir <run_dir> --source-integrity <source_integrity.json>` (must exit 0 with `release_ready: true` before MCP release execution; `--validation-mode structural` or `draft` never grants `PASS_EDL_VALID_FOR_RELEASE`).
    - Read [references/03_storyboard_edl_and_mcp_mapping.md](./references/03_storyboard_edl_and_mcp_mapping.md).
 5. **Phase P4–P5 — Licensed Assets, Local Voice & Sound Design**
    - Fill only justified gaps in `ASSET_GAPS.md`; track every asset in `LICENSE_LEDGER.csv` and costs in `COST_LEDGER.md`.
@@ -75,8 +75,8 @@ Execute sequentially; never promote a gate without its required evidence:
    - Read [references/05_concat_mcp_native_operations.md](./references/05_concat_mcp_native_operations.md) and [references/06_motion_effects_and_layout.md](./references/06_motion_effects_and_layout.md).
 7. **Post-Export QA & Source Integrity (Layers 1–3)**
    - Verify originals untouched via `python3 scripts/verify_source_hashes.py`.
-   - Run `python3 scripts/verify_export.py` on the actual Concat-exported MP4 (ffprobe, black/freeze classification vs EDL, audio signal measurements, preview vs export frame checks, mobile readability).
-   - Separate `PASS_AUDIO_SIGNAL` from `PASS_AUDIO_PERCEPTUAL` (mark `PERCEPTUAL_AUDIO_PENDING` if not listened to by a human or real perceptual check).
+   - Run `python3 scripts/verify_export.py --qa-level release` on the actual Concat-exported MP4 with live MCP provenance backed by an on-disk `raw_transcript_path` + `raw_transcript_sha256` (`evidence_trust_level == LIVE_OBSERVED_WITH_RAW_TRANSCRIPT`), `preview_frame` manifest, ffprobe, black/freeze classification vs EDL, and audio signal measurements across all mandatory audio tracks (VO, BGM, SFX, ambience).
+   - Separate `PASS_AUDIO_SIGNAL` from `PASS_AUDIO_PERCEPTUAL` (mark `PERCEPTUAL_AUDIO_PENDING` until an `OWNER_HUMAN` listens to the exported MP4 and records `OWNER_INTERACTION_RECORDED` approval matching the MP4 SHA-256 and `reviewed_at >= exported_at`).
    - Read [references/08_independent_critic_and_qa.md](./references/08_independent_critic_and_qa.md) and [references/09_safety_recovery_performance.md](./references/09_safety_recovery_performance.md).
 
 ## Progressive Reference Index
