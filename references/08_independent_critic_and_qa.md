@@ -34,12 +34,14 @@ Log defects in `CRITIC_NOTES.md` as `defect_id | timestamp | severity (P0/P1/P2)
 - **P0** (broken crop, blank frame, wrong claim, unreadable text, missing proof, rights error) -> mandatory fix & re-preview.
 - Cap creative revision loops at **3 bounded iterations**. If visual inspection is unavailable -> `PREVIEW_VISUAL_PENDING`.
 
-### Layer 3 — Post-Export Real MP4 QA (`verify_export.py`)
-Runs **ONLY** after Concat `export_wait` succeeds AND the exact MP4 exists inside the run's `exports/` directory:
-- `ffprobe` full stream audit: codec, pixel format, width/height, rotation, display aspect, rational/avg FPS, frame count, duration, byte size, SHA-256, decode check.
-- `blackdetect` and `freezedetect` classified **against EDL intent** (planned fade/hold is documented, unplanned black/freeze is a P0 fail).
-- Frame comparison between Concat `preview_frame` and exported MP4 timestamps (flag >=1 frame critical drift and verify real pixel delta during zoom/pan shots).
-- Audio signal audit (`PASS_AUDIO_SIGNAL`): audio stream presence, no unintended silence/dropouts, RMS/LUFS & true peak check (no clipping). Separate `PASS_AUDIO_PERCEPTUAL` vs `PERCEPTUAL_AUDIO_PENDING`.
+### Layer 3 — Post-Export Real MP4 QA (`verify_export.py`: `technical` vs `release`)
+Strictly separate standalone media checks from end-to-end Concat release verification:
+- **`--qa-level technical`** (standalone diagnostic): Runs `ffprobe`, full `ffmpeg` decode check, spec check, `blackdetect` + `freezedetect` (including trailing EOF freeze closure and strict ffmpeg exit-code checks) classified against EDL intent, and audio signal measurements (`volumedetect` mean/max, `ebur128` integrated LUFS & true peak, `silencedetect` dropouts). Returns **`PASS_TECHNICAL_ONLY`** at most — NEVER certifies Concat origin or release readiness.
+- **`--qa-level release`** (mandatory for C1/C2 promotion): Runs ONLY after Concat `export_wait` succeeds AND requires:
+  1. **`MCP_EXPORT_EVIDENCE.json`** matching `project_id`, `run_id`, `concat_binary`, `concat_version`, `mcp_mode`, `export_start`/`export_wait` completion, `reopen_verified=true` + `timeline_fingerprint`, output path inside `allowed_export_root`, and exact MP4 `sha256` (note: validates orchestrator consistency; self-supplied JSON is not external cryptographic attestation).
+  2. **Non-empty `PREVIEW_MANIFEST.json`** comparing actual Concat `preview_frame` PNGs against exported MP4 frames on the rational frame grid (verifying dimensions, SHA-256, calibrated SSIM and PSNR). Empty preview lists fail with `PREVIEW_MISSING`.
+  3. **Full `ffmpeg` decode** (missing `ffmpeg` returns `BLOCKED_ENV_FFMPEG_MISSING`, never implicit PASS).
+  4. **Structured Perceptual Audio Evidence** (`reviewer`, `reviewed_at`, matching `mp4_sha256`, `verdict: "PASS"`) when audio is required; otherwise release mode exits non-zero with `PENDING_PERCEPTUAL_AUDIO` (unless `--allow-technical-release-profile` is explicitly requested, emitting `C1_TECHNICAL_E2E_PASS_PERCEPTUAL_PENDING`).
 - Confirm native Concat project reopens cleanly and remains editable alongside the MP4.
 
 ## 2. Formal Status State Machine (No Status Inflation)

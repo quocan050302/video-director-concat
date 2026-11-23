@@ -20,7 +20,12 @@ Record the mandatory `ENV_MATRIX`:
 - **Asset selection by `uname -m`**:
   - `arm64` -> `Concat-<version>-macos-arm64.dmg`
   - `x86_64` -> `Concat-<version>-macos-x86_64.dmg`
-- **Verified executable**: `/Applications/Concat.app/Contents/MacOS/concat` (never `concat.exe`; never guess if absent).
+- **Binary discovery order (`platform_adapter.py`)**:
+  1. Explicit `--concat-binary` or `CONCAT_BINARY` env var (validated executable + SHA-256).
+  2. Official installed bundle `/Applications/Concat.app/Contents/MacOS/concat` or `~/Applications/Concat.app/Contents/MacOS/concat` (never `concat.exe`).
+  3. `concat` on `PATH`.
+  4. Local source-built Cargo binary under an explicitly supplied checkout (`--source-checkout <dir>` -> `<dir>/src/target/release/concat`, `<dir>/target/release/concat`, or debug targets) — avoids requiring a `.dmg` when the user already compiled Concat locally. Never auto-compile Rust/FFmpeg blindly on low disk/RAM.
+- **Decoupled readiness**: `c0_ready_for_mcp` is `false` whenever `disk_safety_status == "DISK_BLOCK"` (`<5 GiB` free), while `qa_media_tools_status` (`ffprobe`/`ffmpeg`) is tracked separately from MCP connection readiness. If binary `--version` is unavailable, report `VERSION_PENDING_MCP` rather than `NOT_INSTALLED`.
 - **Security rules**:
   - Verify official GitHub Releases URL and SHA-256 against official `SHA256SUMS`.
   - Never silently download and execute untrusted binaries; stop at `PENDING_OWNER_SECURITY_APPROVAL` when owner confirmation or DMG install is needed.

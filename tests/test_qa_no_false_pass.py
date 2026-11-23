@@ -1,4 +1,4 @@
-"""Negative tests proving QA never fabricates PASS (T09 and Section 31 negative suite)."""
+"""Negative tests proving QA never fabricates PASS (T09 and fail-closed export gates)."""
 
 from __future__ import annotations
 
@@ -24,36 +24,31 @@ def _ffmpeg_or_skip() -> str:
 
 
 def test_nonexistent_empty_tmp_and_corrupt_mp4_fail_closed(tmp_path: Path) -> None:
-    # 1. Nonexistent MP4
-    r_missing = vx.evaluate_export(tmp_path / "does_not_exist.mp4")
+    r_missing = vx.evaluate_export(tmp_path / "does_not_exist.mp4", qa_level="technical")
     assert r_missing["mp4_qa_pass"] is False
     assert r_missing["probe"]["status"] == "FAIL_EXPORT_MISSING"
 
-    # 2. Empty 0-byte MP4
     empty = tmp_path / "empty.mp4"
     empty.write_bytes(b"")
-    r_empty = vx.evaluate_export(empty)
+    r_empty = vx.evaluate_export(empty, qa_level="technical")
     assert r_empty["mp4_qa_pass"] is False
     assert r_empty["probe"]["status"] == "FAIL_EXPORT_EMPTY"
 
-    # 3. Partial .tmp disguised artifact
     partial = tmp_path / "export.mp4.tmp"
     partial.write_bytes(b"partial")
-    r_tmp = vx.evaluate_export(partial)
+    r_tmp = vx.evaluate_export(partial, qa_level="technical")
     assert r_tmp["mp4_qa_pass"] is False
     assert r_tmp["probe"]["status"] == "FAIL_NOT_FINAL_MP4"
 
-    # 4. Corrupted random bytes MP4
     corrupt = tmp_path / "corrupt.mp4"
     corrupt.write_bytes(b"NOT_A_VALID_MP4_CONTAINER_HEADER_1234567890")
-    r_corrupt = vx.evaluate_export(corrupt)
+    r_corrupt = vx.evaluate_export(corrupt, qa_level="technical")
     assert r_corrupt["mp4_qa_pass"] is False
     assert r_corrupt["probe"]["status"] == "FAIL_EXPORT_DECODE"
 
 
 def test_real_mp4_never_fakes_perceptual_audio_and_detects_missing_audio(tmp_path: Path) -> None:
     ffmpeg_bin = _ffmpeg_or_skip()
-    # Silent MP4 when audio is required -> MUST fail
     silent_mp4 = tmp_path / "silent.mp4"
     subprocess.run(
         [
@@ -63,11 +58,10 @@ def test_real_mp4_never_fakes_perceptual_audio_and_detects_missing_audio(tmp_pat
         ],
         check=True,
     )
-    r_silent = vx.evaluate_export(silent_mp4, require_audio=True)
+    r_silent = vx.evaluate_export(silent_mp4, require_audio=True, qa_level="technical")
     assert r_silent["mp4_qa_pass"] is False
     assert r_silent["audio_signal_status"] == "FAIL_NO_AUDIO_STREAM"
 
-    # MP4 with clean tone -> passes technical signal, keeps PERCEPTUAL_AUDIO_PENDING
     av_mp4 = tmp_path / "clean_av.mp4"
     subprocess.run(
         [
@@ -79,11 +73,13 @@ def test_real_mp4_never_fakes_perceptual_audio_and_detects_missing_audio(tmp_pat
         ],
         check=True,
     )
-    r_av = vx.evaluate_export(av_mp4, require_audio=True, perceptual_audio_confirmed=False)
+    r_av = vx.evaluate_export(av_mp4, require_audio=True, perceptual_audio_evidence=None, qa_level="technical")
     assert r_av["mp4_qa_pass"] is True
+    assert r_av["release_gate_pass"] is False
     assert r_av["audio_signal_status"] == "PASS_AUDIO_SIGNAL"
     assert r_av["audio_perceptual_status"] == "PERCEPTUAL_AUDIO_PENDING"
-    assert r_av["overall_status"] == "PASS_TECHNICAL_PENDING_PERCEPTUAL_AUDIO"
+    assert r_av["overall_status"] == "PASS_TECHNICAL_ONLY"
+    assert r_av["audio_check"]["integrated_lufs"] is not None
 
 
 def test_unintended_black_fails_while_edl_intentional_black_allowed(tmp_path: Path) -> None:
@@ -120,9 +116,8 @@ def test_unintended_black_fails_while_edl_intentional_black_allowed(tmp_path: Pa
 
 def test_empty_project_and_missing_mcp_gates_cannot_pass() -> None:
     empty_edl = {"output_spec": {"width": 1080, "height": 1920, "timeline_fps": "30/1"}, "shots": []}
-    res = ve.validate_all(empty_edl)
+    res = ve.validate_all(empty_edl, inventory={}, validation_mode="release")
     assert res["status"] == "FAIL_EDL_INVALID"
     assert any("EMPTY_SHOT_LIST" in e for e in res["errors"])
 
-    # Verify CLI exits non-zero on missing MP4
-    assert vx.main(["--mp4", "/nonexistent/fake_export.mp4"]) == 1
+    assert vx.main(["--mp4", "/nonexistent/fake_export.mp4", "--qa-level", "release"]) == 1

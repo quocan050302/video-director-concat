@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Cross-platform environment probe and platform adapter (Windows & macOS).
 
-Read-only by design: detects OS, CPU architecture, RAM/pressure, disk space,
-FFmpeg/ffprobe availability, official Concat binary candidates, and Antigravity
-global skill / MCP config locations without mutating system security settings.
+Read-only by design: detects OS, CPU architecture, RAM/pressure, disk safety,
+official or source-built Concat binaries, FFmpeg/ffprobe availability, and
+Antigravity skill / MCP config locations without mutating system security settings.
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import platform
@@ -43,6 +44,19 @@ def _parse_version_tuple(version_str: str) -> tuple[int, ...]:
     return tuple(int(n) for n in nums[:3])
 
 
+def _disk_usage_gb(path: Path) -> tuple[float, float]:
+    disk = shutil.disk_usage(path)
+    return round(disk.free / (1024**3), 2), round(disk.total / (1024**3), 2)
+
+
+def _file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def detect_platform_profile(
     system: str | None = None,
     machine: str | None = None,
@@ -67,7 +81,7 @@ def detect_platform_profile(
         ver = os_version if os_version is not None else platform.mac_ver()[0]
         ver_tuple = _parse_version_tuple(ver)
         os_supported = True
-        os_gate = "SUPPORTED"
+        os_gate = "ENV_SUPPORTED"
         model_compat = "FULL_SUPPORTED_PER_DOCS"
         if ver_tuple and ver_tuple < (12, 0):
             os_supported = False
@@ -128,7 +142,7 @@ def detect_platform_profile(
             "arch": arch,
             "os_version": ver or "UNKNOWN",
             "os_supported": arch == "x86_64",
-            "os_gate_status": "SUPPORTED" if arch == "x86_64" else "UNSUPPORTED_CURRENT_VERSION",
+            "os_gate_status": "ENV_SUPPORTED" if arch == "x86_64" else "UNSUPPORTED_CURRENT_VERSION",
             "model_compatibility": "CHECK_HOST_RAM_AND_GPU",
             "override_reference": "references/platform_windows.md",
             "roots_separator": ";",
@@ -178,11 +192,97 @@ def detect_platform_profile(
 
 
 def format_concat_mcp_roots(paths: list[str], system: str | None = None) -> str:
-    """Join allowlisted roots using OS-native separator (':' on macOS/POSIX, ';' on Windows)."""
     profile = detect_platform_profile(system=system)
     sep = profile["roots_separator"]
     cleaned = [p.strip() for p in paths if p and p.strip()]
     return sep.join(cleaned)
+
+
+def _is_executable_file(path: Path) -> bool:
+    return path.is_file() and os.access(path, os.X_OK)
+
+
+def discover_concat_binary(
+    profile: dict[str, Any],
+    explicit_binary: str | Path | None = None,
+    env: dict[str, str] | None = None,
+    source_checkouts: list[str | Path] | None = None,
+) -> dict[str, Any]:
+    """Discover existing Concat binary across explicit path/env, official bundle, PATH, or local Cargo source build."""
+    environ = env if env is not None else os.environ
+    is_win = profile.get("os_family") == "windows"
+    exe_name = "concat.exe" if is_win else "concat"
+
+    candidates: list[tuple[str, Path]] = []
+
+    # 1. Explicit argument or CONCAT_BINARY env
+    raw_explicit = str(explicit_binary) if explicit_binary else environ.get("CONCAT_BINARY", "").strip()
+    if raw_explicit:
+        candidates.append(("EXPLICIT_ENV_OR_ARG", Path(raw_explicit).expanduser()))
+
+    # 2. Official installed app locations
+    for cand in profile.get("concat_binary_candidates", []):
+        candidates.append(("OFFICIAL_APP_BUNDLE", Path(cand)))
+
+    # 3. PATH lookup
+    on_path = shutil.which(exe_name)
+    if on_path:
+        candidates.append(("PATH", Path(on_path)))
+
+    # 4. Explicitly supplied local source checkouts (Cargo release then debug)
+    for checkout in source_checkouts or []:
+        root = Path(checkout).expanduser()
+        for label, rel in (
+            ("SOURCE_BUILD_RELEASE", Path("src") / "target" / "release" / exe_name),
+            ("SOURCE_BUILD_RELEASE", Path("target") / "release" / exe_name),
+            ("SOURCE_BUILD_DEBUG", Path("src") / "target" / "debug" / exe_name),
+            ("SOURCE_BUILD_DEBUG", Path("target") / "debug" / exe_name),
+        ):
+            candidates.append((label, root / rel))
+
+    found_source = "NOT_FOUND"
+    found_path: Path | None = None
+    for source_kind, cand_path in candidates:
+        try:
+            if _is_executable_file(cand_path):
+                found_source = source_kind
+                found_path = cand_path.resolve()
+                break
+        except OSError:
+            continue
+
+    if found_path is None:
+        return {
+            "binary_status": "BINARY_BLOCKED_NOT_FOUND",
+            "binary_source": "NOT_FOUND",
+            "app_binary": "NOT_FOUND",
+            "app_arch": "UNKNOWN",
+            "app_version": "NOT_INSTALLED",
+            "app_sha256": None,
+        }
+
+    app_arch = "UNKNOWN"
+    if profile.get("os_family") == "macos":
+        rc, out, _ = _run_readonly(["file", str(found_path)], timeout_s=5)
+        if rc == 0 and out:
+            app_arch = "arm64" if "arm64" in out else ("x86_64" if "x86_64" in out else out[:80])
+
+    # Safe bounded version probe; never set NOT_INSTALLED when binary exists!
+    rc, out, err = _run_readonly([str(found_path), "--version"], timeout_s=6)
+    first_line = (out or err).splitlines()[0].strip() if (out or err) else ""
+    if rc == 0 and first_line:
+        app_version = first_line[:120]
+    else:
+        app_version = "VERSION_PENDING_MCP"
+
+    return {
+        "binary_status": "BINARY_FOUND",
+        "binary_source": found_source,
+        "app_binary": str(found_path),
+        "app_arch": app_arch,
+        "app_version": app_version,
+        "app_sha256": _file_sha256(found_path),
+    }
 
 
 def _probe_macos_hardware() -> dict[str, Any]:
@@ -247,35 +347,29 @@ def _probe_binary_version(binary_name: str, version_args: list[str] | None = Non
     return {"found": True, "path": resolved, "version": first_line, "exit_code": rc}
 
 
-def probe_host_environment() -> dict[str, Any]:
-    """Execute bounded read-only M0/C0 probe on the current host."""
+def probe_host_environment(
+    explicit_binary: str | Path | None = None,
+    source_checkouts: list[str | Path] | None = None,
+) -> dict[str, Any]:
+    """Execute bounded read-only M0/C0 probe with decoupled OS, disk, binary, QA-tool, and MCP statuses."""
     sys_name = platform.system()
     mac_hw = _probe_macos_hardware() if sys_name == "Darwin" else None
     os_ver = mac_hw["os_version"] if mac_hw else platform.version()
     profile = detect_platform_profile(system=sys_name, machine=platform.machine(), os_version=os_ver)
 
-    disk = shutil.disk_usage(Path.home())
-    disk_free_gb = round(disk.free / (1024**3), 2)
-    disk_total_gb = round(disk.total / (1024**3), 2)
+    disk_free_gb, disk_total_gb = _disk_usage_gb(Path.home())
     if disk_free_gb < MIN_DISK_BLOCK_GB:
-        disk_status = "BLOCKED_LOW_DISK"
+        disk_status = "DISK_BLOCK"
     elif disk_free_gb < MIN_DISK_WARN_GB:
-        disk_status = "WARN_LOW_DISK"
+        disk_status = "DISK_WARN"
     else:
-        disk_status = "OK"
+        disk_status = "DISK_OK"
 
-    found_concat: str | None = None
-    for cand in profile["concat_binary_candidates"]:
-        if os.path.isfile(cand) and os.access(cand, os.X_OK):
-            found_concat = cand
-            break
-
-    concat_arch = "UNKNOWN"
-    concat_version = "NOT_INSTALLED"
-    if found_concat and sys_name == "Darwin":
-        rc, out, _ = _run_readonly(["file", found_concat], timeout_s=5)
-        if rc == 0 and out:
-            concat_arch = "arm64" if "arm64" in out else ("x86_64" if "x86_64" in out else out)
+    bin_info = discover_concat_binary(
+        profile,
+        explicit_binary=explicit_binary,
+        source_checkouts=source_checkouts,
+    )
 
     discovered_mcp_configs = []
     for cfg in profile["mcp_config_candidates"]:
@@ -294,11 +388,34 @@ def probe_host_environment() -> dict[str, Any]:
     ffmpeg_info = _probe_binary_version("ffmpeg", ["-version"])
     shasum_info = _probe_binary_version("shasum", ["--version"]) if sys_name == "Darwin" else None
 
+    qa_media_status = (
+        "QA_TOOLS_READY"
+        if (ffprobe_info["found"] and ffmpeg_info["found"])
+        else ("QA_TOOLS_FFPROBE_MISSING" if not ffprobe_info["found"] else "QA_TOOLS_FFMPEG_MISSING")
+    )
+
+    c0_ready = bool(
+        profile["os_supported"]
+        and bin_info["binary_status"] == "BINARY_FOUND"
+        and disk_status != "DISK_BLOCK"
+    )
+
+    if not profile["os_supported"]:
+        c0_status = "BLOCKED_OS_VERSION"
+    elif disk_status == "DISK_BLOCK":
+        c0_status = "BLOCKED_LOW_DISK"
+    elif bin_info["binary_status"] != "BINARY_FOUND":
+        c0_status = "BLOCKED_ENV_CONCAT_BINARY_MISSING"
+    else:
+        c0_status = "C0_READY_FOR_MCP_HANDSHAKE"
+
     ram_total_bytes = mac_hw["ram_total_bytes"] if mac_hw else None
     ram_total_str = f"{round(ram_total_bytes / (1024**3), 2)} GiB" if ram_total_bytes else "UNKNOWN"
 
-    env_matrix = {
+    return {
         "time_checked": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "m0_status": "M0_ENV_PROBED",
+        "env_supported_status": profile["os_gate_status"],
         "platform_profile": profile,
         "os_version": profile["os_version"],
         "arch": profile["arch"],
@@ -310,36 +427,37 @@ def probe_host_environment() -> dict[str, Any]:
         "disk_free": f"{disk_free_gb} GiB / {disk_total_gb} GiB",
         "disk_free_gb": disk_free_gb,
         "disk_safety_status": disk_status,
-        "app_binary": found_concat or "NOT_FOUND",
-        "app_arch": concat_arch,
-        "app_version": concat_version,
+        "binary_status": bin_info["binary_status"],
+        "binary_source": bin_info["binary_source"],
+        "app_binary": bin_info["app_binary"],
+        "app_arch": bin_info["app_arch"],
+        "app_version": bin_info["app_version"],
+        "app_sha256": bin_info["app_sha256"],
         "model_compatibility": profile["model_compatibility"],
+        "qa_media_tools_status": qa_media_status,
         "ffprobe_version_or_missing": ffprobe_info["version"],
         "ffmpeg_version_or_missing": ffmpeg_info["version"],
         "shasum_available": bool(shasum_info and shasum_info["found"]) if shasum_info else "N/A",
         "python_version": platform.python_version(),
         "mcp_client_runtime": discovered_mcp_configs,
-        "c0_ready_for_mcp": bool(profile["os_supported"] and found_concat and ffprobe_info["found"]),
-        "c0_status": (
-            "ENV_VERIFIED_READY_FOR_MCP"
-            if (profile["os_supported"] and found_concat and ffprobe_info["found"])
-            else (
-                "BLOCKED_OS_VERSION"
-                if not profile["os_supported"]
-                else ("BLOCKED_ENV_CONCAT_NOT_INSTALLED" if not found_concat else "BLOCKED_ENV_FFPROBE_MISSING")
-            )
-        ),
+        "mcp_handshake_status": "MCP_HANDSHAKE_PENDING",
+        "c0_ready_for_mcp": c0_ready,
+        "c0_status": c0_status,
     }
-    return env_matrix
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Read-only cross-platform environment adapter for video-director-concat.")
     parser.add_argument("--json", action="store_true", help="Print full ENV_MATRIX JSON to stdout.")
+    parser.add_argument("--concat-binary", type=Path, help="Optional explicit path to Concat executable.")
+    parser.add_argument("--source-checkout", action="append", default=[], help="Optional local Concat git checkout path to inspect for Cargo build.")
     parser.add_argument("--out", type=Path, help="Optional path to write ENV_MATRIX JSON.")
     args = parser.parse_args(argv)
 
-    result = probe_host_environment()
+    result = probe_host_environment(
+        explicit_binary=args.concat_binary,
+        source_checkouts=args.source_checkout or None,
+    )
     payload = json.dumps(result, indent=2, ensure_ascii=False)
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)

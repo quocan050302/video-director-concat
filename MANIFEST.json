@@ -1,7 +1,7 @@
 {
   "name": "video-director-concat",
-  "skill_semver": "1.0.0",
-  "created_at": "2026-11-23T12:14:52.517239+00:00",
+  "skill_semver": "1.0.1",
+  "created_at": "2026-11-23T12:38:53.022190+00:00",
   "cross_platform": true,
   "platforms_supported": [
     "windows-x86_64",
@@ -43,7 +43,7 @@
     }
   ],
   "note": "MANIFEST.json intentionally excludes itself from files[] to avoid self-referential SHA-256 invalidation.",
-  "file_count": 44,
+  "file_count": 45,
   "files": [
     {
       "path": ".gitignore",
@@ -52,8 +52,8 @@
     },
     {
       "path": "README.md",
-      "bytes": 3982,
-      "sha256": "15772521fc7677937c0fa8f12e63c2db6e1c164e57c78bdac5792318a1754e45"
+      "bytes": 5434,
+      "sha256": "0043d8b8a07d8dad3e387b5f25e72422b313eb18eea93b135cb2f05aabd71801"
     },
     {
       "path": "README_INSTALL.md",
@@ -82,8 +82,8 @@
     },
     {
       "path": "references/03_storyboard_edl_and_mcp_mapping.md",
-      "bytes": 3295,
-      "sha256": "9a93f24a01ce2cbf52bd66dc19b75b79b4dda78f86dc103fe5ea9ac007a42e6e"
+      "bytes": 4256,
+      "sha256": "8d958e00d30c400e4d9c1a5be5c3033eadffab2e107b83750415e355a9508d81"
     },
     {
       "path": "references/04_assets_tts_music_sfx_licensing.md",
@@ -107,8 +107,8 @@
     },
     {
       "path": "references/08_independent_critic_and_qa.md",
-      "bytes": 5160,
-      "sha256": "13c0017b36c3a6b2a77f38261fc411b34160d44c919e19999de731d0430061f1"
+      "bytes": 6141,
+      "sha256": "627e5ca464204f4da6b2ec59718263f0783638128ffaf8e647d96328224c8464"
     },
     {
       "path": "references/09_safety_recovery_performance.md",
@@ -127,8 +127,8 @@
     },
     {
       "path": "references/platform_macos.md",
-      "bytes": 6399,
-      "sha256": "a35e965f775f84ef4979eee1aba84d83070b4d66dcf7ab5d0333f3b8bc7775ed"
+      "bytes": 7247,
+      "sha256": "c7ac56c262d67586a50c63d40c3191b59f0c50eff7df6bd77728f50af1fa3981"
     },
     {
       "path": "references/platform_windows.md",
@@ -137,33 +137,33 @@
     },
     {
       "path": "scripts/check_skill_package.py",
-      "bytes": 10598,
-      "sha256": "be83a71b22593953d64803000d55d2b71b490ad5ed2c48b545c058572cc4c7f1"
+      "bytes": 11921,
+      "sha256": "56d11469ad3275c84072969b8e02e4e035759e694f78319462664fd5456c2d1a"
     },
     {
       "path": "scripts/platform_adapter.py",
-      "bytes": 14552,
-      "sha256": "ed8b0e9c56a564f3036f277bf35ba8483ff0f50decaaee9b290095ea969636d5"
+      "bytes": 18813,
+      "sha256": "9de912fe23cc07de39cc039f3a84b54ec0ae64c8b5fd4d09ad8e640f42c90944"
     },
     {
       "path": "scripts/probe_sources.py",
-      "bytes": 17249,
-      "sha256": "1378dfa1ea8a74ba1f5fb4296029676550ac59e2f48445d5422542ad1f8abde7"
+      "bytes": 20304,
+      "sha256": "99098146036d707dcdf83979f977970d67304c775ac5d0488c657c9455710343"
     },
     {
       "path": "scripts/validate_edl.py",
-      "bytes": 12763,
-      "sha256": "c380500c46f7f533c21ffe0a0fcc6a164bdeec8acff50f27eed3eb9d9f2f37e0"
+      "bytes": 29042,
+      "sha256": "c3d3f24c34bbd951e8dad31c279e344dac365cb8234fa54710ed4ac86fdb4010"
     },
     {
       "path": "scripts/verify_export.py",
-      "bytes": 16563,
-      "sha256": "06c865a246db9150126a9691c208504c69334e33a64708261df821d29ce55721"
+      "bytes": 32117,
+      "sha256": "4e3de51078a9b707dccd60885c8c0203e55e9b5ff7df16fd8c88ce821f8a82ae"
     },
     {
       "path": "scripts/verify_source_hashes.py",
-      "bytes": 4151,
-      "sha256": "180cbe065bdf722a91b3339d83d19e9abe5adf6be6ceafc3e3c3aa867413bdc3"
+      "bytes": 6084,
+      "sha256": "bdfe7a082b35613545da3c672a1a5d640755b3dc5b0cc00a8b82be2957632466"
     },
     {
       "path": "templates/ASSET_GAPS.md",
@@ -172,8 +172,8 @@
     },
     {
       "path": "templates/CONCAT_MCP_ACTION_PLAN.example.json",
-      "bytes": 4591,
-      "sha256": "a8bf4277c2681efe92cf53856ff40d5babfec195dc396a651ccebff37a9b14ba"
+      "bytes": 4796,
+      "sha256": "9d7002d8d06d708d7a9273bdcd0d6215b069dde2c3a9cc2d52a1867c759ac489"
     },
     {
       "path": "templates/COST_LEDGER.md",
@@ -212,8 +212,8 @@
     },
     {
       "path": "templates/QA_REPORT.md",
-      "bytes": 1517,
-      "sha256": "e5027661fa52480f0b38193869ec4428801982ecee9e658eb4b2fb598729893f"
+      "bytes": 2305,
+      "sha256": "974fdd374f1afee485d38c90557412bfd43707561225af0ece40a1d0e24d6c7b"
     },
     {
       "path": "templates/RUN_README.md",
@@ -232,8 +232,8 @@
     },
     {
       "path": "templates/SOURCE_INVENTORY.csv",
-      "bytes": 230,
-      "sha256": "0386190acab24e7565e05efdc65f4ce1508e1990112f4f599d1195683096fb13"
+      "bytes": 259,
+      "sha256": "e1788c6ecd12c1286e6f4f15b3faf9a7c4eb413dddf30784b85541d228956faf"
     },
     {
       "path": "templates/STORYBOARD.csv",
@@ -242,8 +242,8 @@
     },
     {
       "path": "tests/test_edl_contract.py",
-      "bytes": 5405,
-      "sha256": "5ff9af6f1ad00eb7df0e7982f52a9ae788a561413062672249ae809d4a6eed0b"
+      "bytes": 6773,
+      "sha256": "0aad33868937ce4600db53f433ebda3b5fa5a4e77202982dec719ac36cf45a5f"
     },
     {
       "path": "tests/test_platform_adapter.py",
@@ -257,8 +257,13 @@
     },
     {
       "path": "tests/test_qa_no_false_pass.py",
-      "bytes": 4755,
-      "sha256": "7b6b8828f4bc784ee344fbe20fe9a1ef9ee7771a43fe70364e804ca62e4eaf33"
+      "bytes": 4725,
+      "sha256": "1d9009bcf2d01671a0c6bb5fd0efb15190155ce44e1965d27bebf1151700cd90"
+    },
+    {
+      "path": "tests/test_qa_r1_repro_and_hardening.py",
+      "bytes": 25651,
+      "sha256": "989fa60caeeb3cf32f3e269f7b28b3970951d98a70b4e243f0a0f2ed6c2f4826"
     },
     {
       "path": "tests/test_skill_structure.py",
@@ -268,7 +273,7 @@
   ],
   "test_statuses": {
     "static_validation": "PASS_SKILL_STATIC_READY",
-    "pytest_suite": "23_PASSED_0_FAILED",
-    "c1_concat_mcp_smoke": "BLOCKED_ENV_CONCAT_NOT_INSTALLED"
+    "pytest_suite": "33_PASSED_0_FAILED_0_SKIPPED",
+    "c0_c1_concat_mcp_live": "BLOCKED_ENV_CONCAT_BINARY_MISSING"
   }
 }

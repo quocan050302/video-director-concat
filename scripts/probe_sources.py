@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Read-only source discovery, streaming SHA-256, ffprobe metadata, and bounded contact sheets.
 
-Strictly read-only on all input paths. Never modifies, moves, or deletes originals.
+Streaming os.scandir traversal enforces max_files, max_total_gb, max_entries_scanned,
+max_dirs_scanned, and max_wallclock_s immediately without buffering unbounded directory trees.
+Never modifies, moves, or deletes original sources.
 """
 
 from __future__ import annotations
@@ -15,6 +17,9 @@ import os
 import shutil
 import subprocess
 import sys
+import time
+import unicodedata
+from collections import deque
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -25,13 +30,14 @@ MEDIA_EXTENSIONS = {
     ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff",
 }
 
-PROTECTED_ROOTS = {
-    "/", "/System", "/Library", "/bin", "/sbin", "/usr", "/etc", "/private/etc",
-    "C:\\", "C:\\Windows", "C:\\Program Files", "C:\\Program Files (x86)",
+PROTECTED_EXACT_ROOTS = {
+    "/", "/System", "/Library", "/Users", "/Volumes", "/bin", "/sbin", "/usr", "/etc", "/private/etc",
+    "C:\\", "C:\\Windows", "C:\\Program Files", "C:\\Program Files (x86)", "C:\\Users",
 }
 
 INVENTORY_FIELDS = [
     "source_id",
+    "root_id",
     "relative_label",
     "media_type",
     "rights_tag",
@@ -43,6 +49,7 @@ INVENTORY_FIELDS = [
     "r_frame_rate",
     "avg_frame_rate",
     "vfr_suspect",
+    "vfr_detection_method",
     "rotation",
     "video_codec",
     "pix_fmt",
@@ -58,26 +65,37 @@ INVENTORY_FIELDS = [
 
 def _is_protected_path(resolved: Path) -> bool:
     norm = str(resolved)
-    if norm in PROTECTED_ROOTS:
+    if norm in PROTECTED_EXACT_ROOTS:
         return True
-    for root in ("/System", "/etc", "/private/etc", "/bin", "/sbin"):
-        if norm == root or norm.startswith(root + "/"):
+    # Block scanning user's entire HOME wholesale as a single root
+    try:
+        if resolved == Path.home().resolve():
+            return True
+    except OSError:
+        pass
+    for prefix in ("/System", "/etc", "/private/etc", "/bin", "/sbin"):
+        if norm == prefix or norm.startswith(prefix + "/"):
             return True
     return False
 
 
 def _has_traversal_segments(raw_path: str) -> bool:
-    parts = Path(raw_path).parts
-    return ".." in parts
+    return ".." in Path(raw_path).parts
 
 
-def discover_inputs(paths: list[str | Path], limits: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Bounded, read-only file discovery with symlink escape and protected-path guards."""
+def discover_inputs(
+    paths: list[str | Path],
+    limits: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Streaming, bounded, read-only file discovery with symlink escape and budget guards."""
     cfg = {
         "max_depth": 5,
         "max_files": 200,
         "max_file_gb": 8.0,
         "max_total_gb": 40.0,
+        "max_entries_scanned": 5000,
+        "max_dirs_scanned": 1000,
+        "max_wallclock_s": 30.0,
         "allow_all_extensions": False,
     }
     if limits:
@@ -85,13 +103,83 @@ def discover_inputs(paths: list[str | Path], limits: dict[str, Any] | None = Non
 
     max_file_bytes = int(cfg["max_file_gb"] * (1024**3))
     max_total_bytes = int(cfg["max_total_gb"] * (1024**3))
+    max_files = int(cfg["max_files"])
+    max_entries = int(cfg["max_entries_scanned"])
+    max_dirs = int(cfg["max_dirs_scanned"])
+    max_wallclock = float(cfg["max_wallclock_s"])
+    multi_root = len(paths) > 1
 
+    start_t = time.monotonic()
     discovered: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
     seen_realpaths: set[str] = set()
     total_bytes = 0
+    entries_scanned = 0
+    dirs_scanned = 0
+    budget_stopped = False
 
-    for raw in paths:
+    def _check_budget(where: str) -> bool:
+        nonlocal budget_stopped
+        if len(discovered) >= max_files:
+            rejected.append({"path": where, "reason": "SCAN_BUDGET_REACHED:MAX_FILES"})
+            budget_stopped = True
+            return True
+        if entries_scanned >= max_entries:
+            rejected.append({"path": where, "reason": "SCAN_BUDGET_REACHED:MAX_ENTRIES"})
+            budget_stopped = True
+            return True
+        if dirs_scanned >= max_dirs:
+            rejected.append({"path": where, "reason": "SCAN_BUDGET_REACHED:MAX_DIRS"})
+            budget_stopped = True
+            return True
+        if (time.monotonic() - start_t) >= max_wallclock:
+            rejected.append({"path": where, "reason": "SCAN_BUDGET_REACHED:MAX_WALLCLOCK"})
+            budget_stopped = True
+            return True
+        return False
+
+    def _consider_file(file_path: Path, base_root: Path, root_id: str) -> None:
+        nonlocal total_bytes
+        ext = file_path.suffix.lower()
+        if not cfg["allow_all_extensions"] and ext not in MEDIA_EXTENSIONS:
+            return
+        real_key = str(file_path)
+        if real_key in seen_realpaths:
+            return
+        try:
+            size = file_path.stat().st_size
+        except OSError as exc:
+            rejected.append({"path": real_key, "reason": f"STAT_ERROR:{exc}"})
+            return
+        if size > max_file_bytes:
+            rejected.append({"path": real_key, "reason": "MAX_FILE_SIZE_EXCEEDED"})
+            return
+        if total_bytes + size > max_total_bytes:
+            rejected.append({"path": real_key, "reason": "MAX_TOTAL_SIZE_EXCEEDED"})
+            return
+        seen_realpaths.add(real_key)
+        total_bytes += size
+        try:
+            rel_inner = file_path.relative_to(base_root).as_posix()
+        except ValueError:
+            rel_inner = file_path.name
+        rel_norm = unicodedata.normalize("NFC", rel_inner)
+        rel_label = f"{root_id}/{rel_norm}" if multi_root else rel_norm
+        discovered.append(
+            {
+                "abs_path": file_path,
+                "root_id": root_id,
+                "root_path": base_root,
+                "relative_label": rel_label,
+                "bytes": size,
+                "extension": ext,
+            }
+        )
+
+    for root_idx, raw in enumerate(paths, start=1):
+        if budget_stopped:
+            break
+        root_id = f"R{root_idx:02d}"
         raw_str = str(raw)
         if _has_traversal_segments(raw_str):
             rejected.append({"path": raw_str, "reason": "PATH_TRAVERSAL_REJECTED"})
@@ -101,7 +189,6 @@ def discover_inputs(paths: list[str | Path], limits: dict[str, Any] | None = Non
         if not p.exists() and not p.is_symlink():
             rejected.append({"path": raw_str, "reason": "PATH_NOT_FOUND"})
             continue
-
         if p.is_symlink():
             rejected.append({"path": raw_str, "reason": "TOP_LEVEL_SYMLINK_REJECTED"})
             continue
@@ -112,81 +199,55 @@ def discover_inputs(paths: list[str | Path], limits: dict[str, Any] | None = Non
             continue
 
         if root_resolved.is_file():
-            candidates = [(root_resolved, root_resolved.parent)]
-        else:
-            candidates = []
-            root_depth = len(root_resolved.parts)
-            for dirpath, dirnames, filenames in os.walk(root_resolved, followlinks=False):
-                cur = Path(dirpath)
-                depth = len(cur.parts) - root_depth
-                if depth >= cfg["max_depth"]:
-                    dirnames[:] = []
-                # Prune symlinked directories
-                safe_dirs = []
-                for d in sorted(dirnames):
-                    dp = cur / d
-                    if dp.is_symlink():
-                        rejected.append({"path": str(dp), "reason": "SYMLINK_DIR_REJECTED"})
-                    else:
-                        safe_dirs.append(d)
-                dirnames[:] = safe_dirs
+            entries_scanned += 1
+            if not _check_budget(str(root_resolved)):
+                _consider_file(root_resolved, root_resolved.parent, root_id)
+            continue
 
-                for fname in sorted(filenames):
-                    fp = cur / fname
-                    if fp.is_symlink():
-                        rejected.append({"path": str(fp), "reason": "SYMLINK_FILE_REJECTED"})
-                        continue
-                    try:
-                        rfp = fp.resolve(strict=True)
-                    except OSError as exc:
-                        rejected.append({"path": str(fp), "reason": f"STAT_ERROR:{exc}"})
-                        continue
-                    # Symlink escape check
-                    try:
-                        rfp.relative_to(root_resolved)
-                    except ValueError:
-                        rejected.append({"path": str(fp), "reason": "SYMLINK_ESCAPE_REJECTED"})
-                        continue
-                    candidates.append((rfp, root_resolved))
+        queue: deque[tuple[Path, int]] = deque([(root_resolved, 0)])
+        while queue and not budget_stopped:
+            cur_dir, depth = queue.popleft()
+            dirs_scanned += 1
+            if _check_budget(str(cur_dir)):
+                break
 
-        for file_path, base_root in candidates:
-            if len(discovered) >= cfg["max_files"]:
-                rejected.append({"path": str(file_path), "reason": "MAX_FILES_LIMIT_REACHED"})
-                continue
-            ext = file_path.suffix.lower()
-            if not cfg["allow_all_extensions"] and ext not in MEDIA_EXTENSIONS:
-                continue
-            real_key = str(file_path)
-            if real_key in seen_realpaths:
-                continue
             try:
-                size = file_path.stat().st_size
+                with os.scandir(cur_dir) as it:
+                    entries = sorted(it, key=lambda e: e.name)
             except OSError as exc:
-                rejected.append({"path": real_key, "reason": f"STAT_ERROR:{exc}"})
-                continue
-            if size > max_file_bytes:
-                rejected.append({"path": real_key, "reason": "MAX_FILE_SIZE_EXCEEDED"})
-                continue
-            if total_bytes + size > max_total_bytes:
-                rejected.append({"path": real_key, "reason": "MAX_TOTAL_SIZE_EXCEEDED"})
+                rejected.append({"path": str(cur_dir), "reason": f"SCANDIR_ERROR:{exc}"})
                 continue
 
-            seen_realpaths.add(real_key)
-            total_bytes += size
-            try:
-                rel_label = str(file_path.relative_to(base_root))
-            except ValueError:
-                rel_label = file_path.name
-            discovered.append(
-                {
-                    "abs_path": file_path,
-                    "relative_label": rel_label,
-                    "bytes": size,
-                    "extension": ext,
-                }
-            )
+            for entry in entries:
+                if _check_budget(entry.path):
+                    break
+                entries_scanned += 1
+                ep = Path(entry.path)
+                try:
+                    if entry.is_symlink():
+                        reason = "SYMLINK_DIR_REJECTED" if entry.is_dir(follow_symlinks=True) else "SYMLINK_FILE_REJECTED"
+                        rejected.append({"path": entry.path, "reason": reason})
+                        continue
+                    if entry.is_dir(follow_symlinks=False):
+                        if depth < int(cfg["max_depth"]):
+                            queue.append((ep, depth + 1))
+                        continue
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    rfp = ep.resolve(strict=True)
+                except OSError as exc:
+                    rejected.append({"path": entry.path, "reason": f"STAT_ERROR:{exc}"})
+                    continue
 
-    discovered.sort(key=lambda item: item["relative_label"])
+                try:
+                    rfp.relative_to(root_resolved)
+                except ValueError:
+                    rejected.append({"path": entry.path, "reason": "SYMLINK_ESCAPE_REJECTED"})
+                    continue
+
+                _consider_file(rfp, root_resolved, root_id)
+
+    discovered.sort(key=lambda item: (item["root_id"], item["relative_label"]))
     return discovered, rejected
 
 
@@ -297,6 +358,7 @@ def probe_media(path: str | Path, timeout_s: int = 20) -> dict[str, Any]:
         "r_frame_rate": r_fps_str,
         "avg_frame_rate": avg_fps_str,
         "vfr_suspect": vfr_suspect,
+        "vfr_detection_method": "header_rate_heuristic_non_definitive" if v_stream else "n/a",
         "rotation": rotation,
         "video_codec": (v_stream or {}).get("codec_name", ""),
         "pix_fmt": (v_stream or {}).get("pix_fmt", ""),
@@ -313,20 +375,22 @@ def sample_contact_sheet(
     times: list[float],
     max_pixels: int = 640,
     out_dir: str | Path | None = None,
+    source_id: str = "SRC",
+    sha_prefix: str = "",
     timeout_s: int = 20,
 ) -> list[str]:
-    """Extract bounded read-only sample stills at specified timestamps (never modifies source)."""
+    """Extract bounded read-only sample stills using collision-free source_id + sha8 naming."""
     ffmpeg_bin = shutil.which("ffmpeg")
     if not ffmpeg_bin or not times or out_dir is None:
         return []
-    out_path = Path(out_dir)
+    out_path = Path(out_dir).resolve()
     out_path.mkdir(parents=True, exist_ok=True)
-    stem = Path(path).stem
+    safe_prefix = f"{source_id}_{sha_prefix[:8]}" if sha_prefix else source_id
     generated: list[str] = []
     scale_expr = f"scale='min({max_pixels},iw)':-2"
 
-    for idx, t in enumerate(times[:12]):
-        target = out_path / f"{stem}_t{idx:02d}_{t:.2f}s.jpg"
+    for idx, t in enumerate(times[:6]):
+        target = out_path / f"{safe_prefix}_t{idx:02d}_{t:.2f}s.jpg"
         cmd = [
             ffmpeg_bin,
             "-hide_banner",
@@ -380,7 +444,7 @@ def _probe_one(
     if meta.get("error"):
         notes_parts.append(str(meta["error"]))
     if meta.get("vfr_suspect"):
-        notes_parts.append("VFR_SUSPECT")
+        notes_parts.append("VFR_SUSPECT_HEURISTIC")
     if meta.get("color_transfer") in {"arib-std-b67", "smpte2084"}:
         notes_parts.append("HDR_INPUT")
 
@@ -389,10 +453,19 @@ def _probe_one(
         dur = float(meta.get("duration_s") or 0.0)
         if dur > 0:
             times = sorted({round(min(dur * frac, max(0.0, dur - 0.1)), 2) for frac in (0.1, 0.5, 0.85)})
-            stills = sample_contact_sheet(abs_path, times, max_pixels=640, out_dir=contact_dir, timeout_s=timeout_s)
+            stills = sample_contact_sheet(
+                abs_path,
+                times,
+                max_pixels=640,
+                out_dir=contact_dir,
+                source_id=source_id,
+                sha_prefix=sha[:8],
+                timeout_s=timeout_s,
+            )
 
     return {
         "source_id": source_id,
+        "root_id": item.get("root_id", "R01"),
         "relative_label": item["relative_label"],
         "media_type": meta.get("media_type", "unknown"),
         "rights_tag": rights_tag,
@@ -404,6 +477,7 @@ def _probe_one(
         "r_frame_rate": meta.get("r_frame_rate", ""),
         "avg_frame_rate": meta.get("avg_frame_rate", ""),
         "vfr_suspect": meta.get("vfr_suspect", False),
+        "vfr_detection_method": meta.get("vfr_detection_method", "n/a"),
         "rotation": meta.get("rotation", 0),
         "video_codec": meta.get("video_codec", ""),
         "pix_fmt": meta.get("pix_fmt", ""),
@@ -429,6 +503,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-files", type=int, default=200)
     parser.add_argument("--max-file-gb", type=float, default=8.0)
     parser.add_argument("--max-total-gb", type=float, default=40.0)
+    parser.add_argument("--max-entries", type=int, default=5000)
+    parser.add_argument("--max-dirs", type=int, default=1000)
+    parser.add_argument("--max-wallclock", type=float, default=30.0)
     parser.add_argument("--timeout", type=int, default=20)
     parser.add_argument("--workers", type=int, default=2)
     args = parser.parse_args(argv)
@@ -438,6 +515,9 @@ def main(argv: list[str] | None = None) -> int:
         "max_files": args.max_files,
         "max_file_gb": args.max_file_gb,
         "max_total_gb": args.max_total_gb,
+        "max_entries_scanned": args.max_entries,
+        "max_dirs_scanned": args.max_dirs,
+        "max_wallclock_s": args.max_wallclock,
     }
     discovered, rejected = discover_inputs(args.inputs, limits=limits)
     worker_count = max(1, min(args.workers, 4))

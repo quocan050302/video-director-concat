@@ -37,9 +37,16 @@ See [`README_INSTALL.md`](./README_INSTALL.md) for the complete Windows/macOS in
 
 ```sh
 python3 scripts/check_skill_package.py --skill-dir .
-pytest -v tests
+python3 -m pytest -v tests
 python3 scripts/platform_adapter.py --json
 ```
+
+### Hardened Validation Contracts (QA.R1)
+
+- **EDL (`scripts/validate_edl.py`)**: Default `--validation-mode release` is strictly fail-closed (requires verified `SOURCE_INVENTORY`, `probe_status=OK`, valid SHA-256, inventory-authoritative rights, complete `LICENSED` ledger evidence, `GENERATED` provenance, and resolvable claim `evidence_ref`). Planning drafts may use `--validation-mode draft` (`PASS_EDL_DRAFT_ONLY`, never release green).
+- **Export QA (`scripts/verify_export.py`)**: Strictly separates `--qa-level technical` (`PASS_TECHNICAL_ONLY` standalone media check) from `--qa-level release` (requires `MCP_EXPORT_EVIDENCE.json`, non-empty `PREVIEW_MANIFEST.json` with SSIM+PSNR+dimensions checks, full `ffmpeg` decode, EOF freeze detection, EBU R128 LUFS/true-peak + silence-dropout checks, and structured perceptual audio evidence).
+- **Source Discovery & Integrity (`scripts/probe_sources.py`, `scripts/verify_source_hashes.py`)**: Streaming bounded `os.scandir` traversal (`max_files`, `max_entries`, `max_dirs`, `max_wallclock`), multi-root disambiguation (`R01/...`), collision-free contact sheets, and multi-root SHA-256 verification (`--root R01=...`).
+- **Platform Discovery (`scripts/platform_adapter.py`)**: Supports official bundles, `CONCAT_BINARY`, `PATH`, and local source-built Cargo binaries (`--source-checkout`), with decoupled OS, disk (`DISK_OK`/`DISK_WARN`/`DISK_BLOCK`), binary, QA-tool, and MCP statuses.
 
 ### Install as Antigravity Global Skill
 

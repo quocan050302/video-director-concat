@@ -91,11 +91,11 @@
     {
       "step_id": "M08",
       "phase": "C1_EXPORT",
-      "operation_intent": "Export final MP4 via Concat native exporter with bounded timeout and cancel handler",
+      "operation_intent": "Export final MP4 via Concat native exporter with bounded timeout, emit MCP_EXPORT_EVIDENCE.json and PREVIEW_MANIFEST.json, and run verify_export.py --qa-level release",
       "exposed_mcp_tool": "export_start",
       "source_ids": [],
-      "precondition": "Disk free margin verified; critic P0 defects resolved; project saved",
-      "expected_postcondition": "export_wait completes; actual MP4 exists in exports/ and passes verify_export.py",
+      "precondition": "Disk free margin verified; EDL passed --validation-mode release; critic P0 defects resolved; project saved and reopened",
+      "expected_postcondition": "export_wait completes; actual MP4 exists in allowed exports/ root; MCP_EXPORT_EVIDENCE.json SHA-256 matches; verify_export.py --qa-level release passes",
       "rollback_strategy": "export_cancel and quarantine partial file",
       "evidence_path": "POST_EXPORT_QA.json",
       "status": "PLANNED"

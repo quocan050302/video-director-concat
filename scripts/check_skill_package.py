@@ -55,6 +55,7 @@ REQUIRED_PATHS = [
     "tests/test_probe_readonly.py",
     "tests/test_qa_no_false_pass.py",
     "tests/test_platform_adapter.py",
+    "tests/test_qa_r1_repro_and_hardening.py",
 ]
 
 SECRET_PATTERNS = [
@@ -64,7 +65,6 @@ SECRET_PATTERNS = [
     re.compile(r"BEGIN (RSA|OPENSSH|EC) PRIVATE KEY"),
 ]
 
-# Detect hardcoded personal home paths while allowing documented placeholders like <local-user>
 PERSONAL_PATH_PATTERNS = [
     re.compile(r"/Users/(?!<local-user>)[A-Za-z0-9._-]+/"),
     re.compile(r"C:\\Users\\(?!<local-user>)[A-Za-z0-9._-]+\\"),
@@ -87,8 +87,18 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _is_safe_manifest_rel(rel: str) -> bool:
+    if not rel or not isinstance(rel, str) or "\x00" in rel:
+        return False
+    p = Path(rel)
+    if p.is_absolute() or ".." in p.parts:
+        return False
+    if re.match(r"^[A-Za-z]:[\\/]", rel):
+        return False
+    return True
+
+
 def validate_frontmatter(skill_md: Path) -> dict[str, Any]:
-    """Validate YAML frontmatter (pure stdlib) and mandatory anti-fake-PASS clause."""
     errors: list[str] = []
     if not skill_md.exists():
         return {"status": "FAIL", "errors": ["SKILL.md missing"]}
@@ -134,6 +144,7 @@ def validate_tree(skill_dir: Path) -> dict[str, Any]:
 
 def validate_manifest_hashes(skill_dir: Path, manifest_path: Path) -> dict[str, Any]:
     errors: list[str] = []
+    root = skill_dir.resolve()
     if not manifest_path.is_file():
         return {"status": "FAIL", "errors": ["MANIFEST.json missing"]}
     try:
@@ -150,14 +161,37 @@ def validate_manifest_hashes(skill_dir: Path, manifest_path: Path) -> dict[str, 
     if not isinstance(files_list, list) or not files_list:
         return {"status": "FAIL", "errors": ["MANIFEST.json missing non-empty files list"]}
 
+    if manifest.get("file_count") is not None and manifest.get("file_count") != len(files_list):
+        errors.append(f"FILE_COUNT_MISMATCH: manifest file_count={manifest.get('file_count')} vs len(files)={len(files_list)}")
+
     listed_paths: set[str] = set()
     for entry in files_list:
+        if not isinstance(entry, dict):
+            errors.append("INVALID_MANIFEST_ENTRY_TYPE")
+            continue
         rel = entry.get("path", "")
         if rel == "MANIFEST.json":
             errors.append("SELF_REFERENTIAL_MANIFEST_FORBIDDEN: MANIFEST.json must not hash itself")
             continue
+        if not _is_safe_manifest_rel(rel):
+            errors.append(f"UNSAFE_MANIFEST_PATH: {rel!r}")
+            continue
+        if rel in listed_paths:
+            errors.append(f"DUPLICATE_MANIFEST_ENTRY: {rel}")
+            continue
         listed_paths.add(rel)
-        target = skill_dir / rel
+
+        raw_target = root / rel
+        if raw_target.is_symlink():
+            errors.append(f"SYMLINK_IN_MANIFEST_FORBIDDEN: {rel}")
+            continue
+        try:
+            target = raw_target.resolve()
+            target.relative_to(root)
+        except ValueError:
+            errors.append(f"UNSAFE_MANIFEST_PATH: {rel} escapes skill root")
+            continue
+
         if not target.is_file():
             errors.append(f"MANIFEST_FILE_MISSING: {rel}")
             continue
@@ -168,14 +202,21 @@ def validate_manifest_hashes(skill_dir: Path, manifest_path: Path) -> dict[str, 
         if actual_sha != entry.get("sha256"):
             errors.append(f"SHA256_MISMATCH: {rel}")
 
-    # Verify no untracked stray files inside skill tree
-    for p in sorted(skill_dir.rglob("*")):
+    for p in sorted(root.rglob("*")):
+        if ".git" in p.parts or "__pycache__" in p.parts or ".pytest_cache" in p.parts or p.name == ".DS_Store":
+            continue
+        if p.is_symlink():
+            try:
+                p.resolve().relative_to(root)
+            except ValueError:
+                errors.append(f"SYMLINK_ESCAPE_IN_SKILL: {p.relative_to(root).as_posix()}")
+            else:
+                errors.append(f"SYMLINK_IN_SKILL_FORBIDDEN: {p.relative_to(root).as_posix()}")
+            continue
         if not p.is_file():
             continue
-        rel = p.relative_to(skill_dir).as_posix()
+        rel = p.relative_to(root).as_posix()
         if rel == "MANIFEST.json":
-            continue
-        if ".git" in p.parts or "__pycache__" in p.parts or ".pytest_cache" in p.parts or p.name == ".DS_Store":
             continue
         if rel not in listed_paths:
             errors.append(f"UNTRACKED_FILE_IN_SKILL: {rel}")
@@ -191,7 +232,6 @@ def scan_for_secrets_and_hardcoded_user_paths(skill_dir: Path) -> dict[str, Any]
         if p.suffix.lower() not in {".md", ".py", ".json", ".csv", ".txt", ".yml", ".yaml"}:
             continue
         rel = p.relative_to(skill_dir).as_posix()
-        # Skip self-regex definitions inside check_skill_package.py
         if rel == "scripts/check_skill_package.py":
             continue
         text = p.read_text(encoding="utf-8", errors="replace")
