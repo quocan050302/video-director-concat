@@ -1,0 +1,274 @@
+{
+  "name": "video-director-concat",
+  "skill_semver": "1.0.0",
+  "created_at": "2026-11-23T12:14:52.517239+00:00",
+  "cross_platform": true,
+  "platforms_supported": [
+    "windows-x86_64",
+    "macos-arm64",
+    "macos-x86_64"
+  ],
+  "engine_policy": "CONCAT_MCP_EXCLUSIVE_HEADLESS_DEFAULT",
+  "source_references": [
+    {
+      "repo": "jub0t/Concat",
+      "url": "https://github.com/jub0t/Concat",
+      "license": "AGPL-3.0-or-later",
+      "role": "sole_native_editor_and_exporter",
+      "verified_release": "v0.2.12"
+    },
+    {
+      "repo": "browser-use/video-use",
+      "url": "https://github.com/browser-use/video-use",
+      "license": "MIT",
+      "role": "planning_principles_only"
+    },
+    {
+      "repo": "FireRedTeam/FireRed-OpenStoryline",
+      "url": "https://github.com/FireRedTeam/FireRed-OpenStoryline",
+      "license": "Apache-2.0",
+      "role": "planning_principles_only"
+    },
+    {
+      "repo": "Melvynx/video-agent-skills",
+      "url": "https://github.com/Melvynx/video-agent-skills",
+      "license": "MIT",
+      "role": "planning_principles_only"
+    },
+    {
+      "repo": "remotion-dev/skills",
+      "url": "https://github.com/remotion-dev/skills",
+      "license": "NO_SPDX_LICENSE_IN_REPO_ZERO_TEXT_COPIED",
+      "role": "general_motion_craft_original_prose_only"
+    }
+  ],
+  "note": "MANIFEST.json intentionally excludes itself from files[] to avoid self-referential SHA-256 invalidation.",
+  "file_count": 44,
+  "files": [
+    {
+      "path": ".gitignore",
+      "bytes": 169,
+      "sha256": "82dd53b374f2aa590d18f5bd5c38a2ba2d590fd31c64234cfa51850ee21a6634"
+    },
+    {
+      "path": "README.md",
+      "bytes": 3982,
+      "sha256": "15772521fc7677937c0fa8f12e63c2db6e1c164e57c78bdac5792318a1754e45"
+    },
+    {
+      "path": "README_INSTALL.md",
+      "bytes": 6996,
+      "sha256": "387070074f5077f984be2bd05b3bb1890cca75cd9187684a1c70b0e038a4f9d6"
+    },
+    {
+      "path": "SKILL.md",
+      "bytes": 11135,
+      "sha256": "9cf38648fe4f7c49662d412657f675c69a1ec198308353a582caa56020e8e3b3"
+    },
+    {
+      "path": "references/00_architecture_and_modes.md",
+      "bytes": 4365,
+      "sha256": "6e7cf5408d824b36b5ec724bfafd0431dde9b94cdb823fb57d6728f30029d8e5"
+    },
+    {
+      "path": "references/01_source_probing_and_scene_index.md",
+      "bytes": 3579,
+      "sha256": "30940c32bac0ab9e7a2362760e301abd51cbbbca3b262d2f041e16e0f2979ef0"
+    },
+    {
+      "path": "references/02_creative_direction_and_scripts.md",
+      "bytes": 3461,
+      "sha256": "863fe4ab02956d98098aa5174afa417c7d954c8fee4704ac8dd854ea2b887df9"
+    },
+    {
+      "path": "references/03_storyboard_edl_and_mcp_mapping.md",
+      "bytes": 3295,
+      "sha256": "9a93f24a01ce2cbf52bd66dc19b75b79b4dda78f86dc103fe5ea9ac007a42e6e"
+    },
+    {
+      "path": "references/04_assets_tts_music_sfx_licensing.md",
+      "bytes": 3125,
+      "sha256": "de5bb6cf2d169a2309f125687831c44977d7bcf90bb08307b40378b8ea1b146d"
+    },
+    {
+      "path": "references/05_concat_mcp_native_operations.md",
+      "bytes": 4422,
+      "sha256": "12566254135f46cafd7007b7772326b10b1d79e886ab3de9863b2dd15ef0d0ee"
+    },
+    {
+      "path": "references/06_motion_effects_and_layout.md",
+      "bytes": 3265,
+      "sha256": "e6141d5c0d844432c970aac18ba5d2807f9ee10460761a44536f7f478bb58522"
+    },
+    {
+      "path": "references/07_audio_design_and_mix.md",
+      "bytes": 3390,
+      "sha256": "d7d76ba38d999dc34e9c6b3f9d1c680d1265db826923682b14470e719c8fca41"
+    },
+    {
+      "path": "references/08_independent_critic_and_qa.md",
+      "bytes": 5160,
+      "sha256": "13c0017b36c3a6b2a77f38261fc411b34160d44c919e19999de731d0430061f1"
+    },
+    {
+      "path": "references/09_safety_recovery_performance.md",
+      "bytes": 4389,
+      "sha256": "87745a34e208ac774ccdfe2f6f7912dd561fb407ec9446944b9f0e7fef4f31af"
+    },
+    {
+      "path": "references/10_capability_and_version_matrix.md",
+      "bytes": 3978,
+      "sha256": "f5f55efa3aba688c5ef85aab3182176781b29db9ac1a7f3fdaaee5d2d0dac0d5"
+    },
+    {
+      "path": "references/11_source_inspiration_license_notes.md",
+      "bytes": 3758,
+      "sha256": "e15439bf5ec66063b07185341760b3afcb4f2f9bcf0674bf2f2940bc473e2aed"
+    },
+    {
+      "path": "references/platform_macos.md",
+      "bytes": 6399,
+      "sha256": "a35e965f775f84ef4979eee1aba84d83070b4d66dcf7ab5d0333f3b8bc7775ed"
+    },
+    {
+      "path": "references/platform_windows.md",
+      "bytes": 2873,
+      "sha256": "ac9fe09763db967285d16ddeec2888f199f1c7b4bc3b2b1ea23459f92fc33b9d"
+    },
+    {
+      "path": "scripts/check_skill_package.py",
+      "bytes": 10598,
+      "sha256": "be83a71b22593953d64803000d55d2b71b490ad5ed2c48b545c058572cc4c7f1"
+    },
+    {
+      "path": "scripts/platform_adapter.py",
+      "bytes": 14552,
+      "sha256": "ed8b0e9c56a564f3036f277bf35ba8483ff0f50decaaee9b290095ea969636d5"
+    },
+    {
+      "path": "scripts/probe_sources.py",
+      "bytes": 17249,
+      "sha256": "1378dfa1ea8a74ba1f5fb4296029676550ac59e2f48445d5422542ad1f8abde7"
+    },
+    {
+      "path": "scripts/validate_edl.py",
+      "bytes": 12763,
+      "sha256": "c380500c46f7f533c21ffe0a0fcc6a164bdeec8acff50f27eed3eb9d9f2f37e0"
+    },
+    {
+      "path": "scripts/verify_export.py",
+      "bytes": 16563,
+      "sha256": "06c865a246db9150126a9691c208504c69334e33a64708261df821d29ce55721"
+    },
+    {
+      "path": "scripts/verify_source_hashes.py",
+      "bytes": 4151,
+      "sha256": "180cbe065bdf722a91b3339d83d19e9abe5adf6be6ceafc3e3c3aa867413bdc3"
+    },
+    {
+      "path": "templates/ASSET_GAPS.md",
+      "bytes": 688,
+      "sha256": "68dedeca8f552e497cd4f3f616bb94c4a7f394d549e07e01dc8b870caf9df7dd"
+    },
+    {
+      "path": "templates/CONCAT_MCP_ACTION_PLAN.example.json",
+      "bytes": 4591,
+      "sha256": "a8bf4277c2681efe92cf53856ff40d5babfec195dc396a651ccebff37a9b14ba"
+    },
+    {
+      "path": "templates/COST_LEDGER.md",
+      "bytes": 1722,
+      "sha256": "0ab066b35150dcca5cd33021bd277a026c7f853baf32ec031b2f0735b6e71f71"
+    },
+    {
+      "path": "templates/CREATIVE_BRIEF.md",
+      "bytes": 2172,
+      "sha256": "8e56681b304bb1b6cda38da1aa47af503c37ac6ff7fbc3bb34adf7df099bd048"
+    },
+    {
+      "path": "templates/DELIVERABLES.md",
+      "bytes": 737,
+      "sha256": "6e4ffe2866fd94be9e0edd74489c349adf77aec13616454f90062fed0c6b6a09"
+    },
+    {
+      "path": "templates/EDL.example.json",
+      "bytes": 2760,
+      "sha256": "bf3c5dbb49f1db4f5973f87e3be329c94340d25e7fe5dd2f43a4291941f2616e"
+    },
+    {
+      "path": "templates/HOOK_CANDIDATES.md",
+      "bytes": 987,
+      "sha256": "33b45fa4044e794f4713f8fba8c6a379bae2e2d7899c80e5f5d8d9cc403f0f3f"
+    },
+    {
+      "path": "templates/HUMAN_GATE.md",
+      "bytes": 824,
+      "sha256": "7e164221e3e51319112b70e0c330a4ba7421a3d2eede2a0ce8de091ec48d7c93"
+    },
+    {
+      "path": "templates/LICENSE_LEDGER.csv",
+      "bytes": 231,
+      "sha256": "000a0ba600003b786b784491948ed0f1c198c6ffd1154c5cee7f8569ea59b35d"
+    },
+    {
+      "path": "templates/QA_REPORT.md",
+      "bytes": 1517,
+      "sha256": "e5027661fa52480f0b38193869ec4428801982ecee9e658eb4b2fb598729893f"
+    },
+    {
+      "path": "templates/RUN_README.md",
+      "bytes": 767,
+      "sha256": "931038390453a3b61907056d837da21b999a7d942dd2344d5b66f11d5fad28a8"
+    },
+    {
+      "path": "templates/SCRIPT_AND_VO.md",
+      "bytes": 945,
+      "sha256": "43a7838fb868c111b7fbfbaf9f9dc75a9b3a9c5ca1bddf98a747b33cff19adb2"
+    },
+    {
+      "path": "templates/SOUND_CUE_SHEET.csv",
+      "bytes": 149,
+      "sha256": "bbcb4262210764a8d690213fe97421cced46eaaf629973699ded6a66d9c4a657"
+    },
+    {
+      "path": "templates/SOURCE_INVENTORY.csv",
+      "bytes": 230,
+      "sha256": "0386190acab24e7565e05efdc65f4ce1508e1990112f4f599d1195683096fb13"
+    },
+    {
+      "path": "templates/STORYBOARD.csv",
+      "bytes": 222,
+      "sha256": "f4cd6149a347781393b51ffc990e00472c0183fb11c562a1b45be91cb1a45e5d"
+    },
+    {
+      "path": "tests/test_edl_contract.py",
+      "bytes": 5405,
+      "sha256": "5ff9af6f1ad00eb7df0e7982f52a9ae788a561413062672249ae809d4a6eed0b"
+    },
+    {
+      "path": "tests/test_platform_adapter.py",
+      "bytes": 2859,
+      "sha256": "576ed66607a33e99628a2cbcca1ffdbdd85e690731ab9dfc643b809bbb8e590e"
+    },
+    {
+      "path": "tests/test_probe_readonly.py",
+      "bytes": 2851,
+      "sha256": "74d6586aa44c018aa1e7596f33c8860c96b0bb6459d75d0b8f000c8ae2619ba9"
+    },
+    {
+      "path": "tests/test_qa_no_false_pass.py",
+      "bytes": 4755,
+      "sha256": "7b6b8828f4bc784ee344fbe20fe9a1ef9ee7771a43fe70364e804ca62e4eaf33"
+    },
+    {
+      "path": "tests/test_skill_structure.py",
+      "bytes": 1745,
+      "sha256": "af3dcf370968a1b6f54e41f24194c2f7a9047d55c8dcf138693dd168b26e4d73"
+    }
+  ],
+  "test_statuses": {
+    "static_validation": "PASS_SKILL_STATIC_READY",
+    "pytest_suite": "23_PASSED_0_FAILED",
+    "c1_concat_mcp_smoke": "BLOCKED_ENV_CONCAT_NOT_INSTALLED"
+  }
+}

@@ -1,0 +1,104 @@
+{
+  "schema_version": "1.0.0",
+  "note": "Action plan template ONLY. Never mark status EXECUTED until live MCP tools/call succeeds and args are matched against actual tools/list JSON schemas.",
+  "concat_version_verified": "NOT_YET_VERIFIED",
+  "mcp_mode_required": "headless",
+  "steps": [
+    {
+      "step_id": "M01",
+      "phase": "C1_SETUP",
+      "operation_intent": "Verify live Concat version and deterministic headless mode",
+      "exposed_mcp_tool": "concat_version",
+      "source_ids": [],
+      "precondition": "MCP stdio handshake initialized and tools/list captured",
+      "expected_postcondition": "mcp.mode == 'headless' and non-empty engine version recorded",
+      "rollback_strategy": "none (read-only)",
+      "evidence_path": "qa/MCP_CAPABILITY_MATRIX.json",
+      "status": "PLANNED"
+    },
+    {
+      "step_id": "M02",
+      "phase": "C1_SETUP",
+      "operation_intent": "Create isolated native Concat project inside run workspace",
+      "exposed_mcp_tool": "project_create",
+      "source_ids": [],
+      "precondition": "Run directory verified under allowed CONCAT_MCP_ROOTS; no lock collision",
+      "expected_postcondition": "Valid project_id returned; native project folder created",
+      "rollback_strategy": "project_close and remove run-created test folder only",
+      "evidence_path": "qa/timeline_after_create.json",
+      "status": "PLANNED"
+    },
+    {
+      "step_id": "M03",
+      "phase": "C1_SETUP",
+      "operation_intent": "Configure output video canvas matching validated EDL output_spec",
+      "exposed_mcp_tool": "project_set_video",
+      "source_ids": [],
+      "precondition": "Project active",
+      "expected_postcondition": "Readback confirms width, height, and FPS match EDL",
+      "rollback_strategy": "edit_undo",
+      "evidence_path": "qa/timeline_after_video_spec.json",
+      "status": "PLANNED"
+    },
+    {
+      "step_id": "M04",
+      "phase": "C1_IMPORT",
+      "operation_intent": "Probe and import verified OWNED/LICENSED sources",
+      "exposed_mcp_tool": "media_import",
+      "source_ids": ["U001", "U002", "U003"],
+      "precondition": "All source_ids passed EDL rights check and SHA256 snapshot",
+      "expected_postcondition": "Imported media IDs match ffprobe metadata",
+      "rollback_strategy": "edit_undo",
+      "evidence_path": "qa/media_import_readback.json",
+      "status": "PLANNED"
+    },
+    {
+      "step_id": "M05",
+      "phase": "C1_EDIT",
+      "operation_intent": "Assemble V1 visual sequence, trim, framing transform, fractional keyframe, and safe-zone title",
+      "exposed_mcp_tool": "clips_add_sequence",
+      "source_ids": ["U001", "U002"],
+      "precondition": "Assets imported; exact schemas validated from tools/list",
+      "expected_postcondition": "timeline_read shows expected clip order, durations, and zero unintended gaps",
+      "rollback_strategy": "edit_undo",
+      "evidence_path": "qa/timeline_read_v1.json",
+      "status": "PLANNED"
+    },
+    {
+      "step_id": "M06",
+      "phase": "C1_PREVIEW",
+      "operation_intent": "Capture composited preview frames at opening, cut boundaries, keyframe endpoints, and end",
+      "exposed_mcp_tool": "preview_frame",
+      "source_ids": [],
+      "precondition": "Timeline built",
+      "expected_postcondition": "Actual PNG frames written and inspected by independent critic",
+      "rollback_strategy": "none (read-only)",
+      "evidence_path": "PREVIEW_EVIDENCE/",
+      "status": "PLANNED"
+    },
+    {
+      "step_id": "M07",
+      "phase": "C1_PERSISTENCE",
+      "operation_intent": "Save, close, reopen project and verify semantic timeline fingerprint",
+      "exposed_mcp_tool": "project_save",
+      "source_ids": [],
+      "precondition": "No concurrent lock holder",
+      "expected_postcondition": "Reopened timeline_read semantically matches pre-save timeline",
+      "rollback_strategy": "restore checkpoint backup",
+      "evidence_path": "qa/reopen_diff.json",
+      "status": "PLANNED"
+    },
+    {
+      "step_id": "M08",
+      "phase": "C1_EXPORT",
+      "operation_intent": "Export final MP4 via Concat native exporter with bounded timeout and cancel handler",
+      "exposed_mcp_tool": "export_start",
+      "source_ids": [],
+      "precondition": "Disk free margin verified; critic P0 defects resolved; project saved",
+      "expected_postcondition": "export_wait completes; actual MP4 exists in exports/ and passes verify_export.py",
+      "rollback_strategy": "export_cancel and quarantine partial file",
+      "evidence_path": "POST_EXPORT_QA.json",
+      "status": "PLANNED"
+    }
+  ]
+}

@@ -1,0 +1,97 @@
+{
+  "schema_version": "1.0.0",
+  "edl_id": "EXAMPLE_PRODUCT_DEMO_001",
+  "mode": "product_ad",
+  "caption_policy": "OFF",
+  "output_spec": {
+    "width": 1080,
+    "height": 1920,
+    "timeline_fps": "30/1",
+    "aspect_ratio": "9:16"
+  },
+  "claims": [
+    {
+      "claim_id": "E001",
+      "text": "Actual product physical finish shown in owned studio clip",
+      "status": "VERIFIED_WITH_EVIDENCE",
+      "evidence_ref": "SOURCE_TRUTH.md#U001"
+    }
+  ],
+  "shots": [
+    {
+      "shot_id": "S001",
+      "track": "V1",
+      "mode": "product_ad",
+      "source_id": "U001",
+      "source_rights": "OWNED",
+      "source_in_s": 0.5,
+      "source_out_s": 3.5,
+      "speed": 1.0,
+      "output_in_frame": 0,
+      "output_out_frame": 90,
+      "timeline_fps": "30/1",
+      "purpose": "opening_real_product_proof",
+      "visual_subject": "Close-up of actual physical product in clean lighting",
+      "safe_region_normalized": [0.08, 0.12, 0.92, 0.78],
+      "framing_mode": "framed",
+      "motion_intent": "slow_zoom_to_product_detail",
+      "transition_intent": "hard_cut",
+      "intentional_black": false,
+      "intentional_freeze": false,
+      "narration_beat_id": "B001",
+      "sound_cue_ids": ["FX001"],
+      "claim_evidence_ids": ["E001"],
+      "requires_license_review": false,
+      "mcp_capability_status": "NOT_YET_TESTED"
+    },
+    {
+      "shot_id": "S002",
+      "track": "V1",
+      "mode": "product_ad",
+      "source_id": "U002",
+      "source_rights": "OWNED",
+      "source_in_s": 1.0,
+      "source_out_s": 4.0,
+      "speed": 1.0,
+      "output_in_frame": 90,
+      "output_out_frame": 180,
+      "timeline_fps": "30/1",
+      "purpose": "product_in_use_benefit",
+      "visual_subject": "Hands demonstrating real product usage",
+      "safe_region_normalized": [0.08, 0.12, 0.92, 0.78],
+      "framing_mode": "framed",
+      "motion_intent": "static",
+      "transition_intent": "hard_cut",
+      "intentional_black": false,
+      "intentional_freeze": false,
+      "narration_beat_id": "B002",
+      "sound_cue_ids": ["BGM001"],
+      "claim_evidence_ids": ["E001"],
+      "requires_license_review": false,
+      "mcp_capability_status": "NOT_YET_TESTED"
+    }
+  ],
+  "overlays": [
+    {
+      "overlay_id": "T001",
+      "overlay_type": "proof_label",
+      "text": "Actual Product Finish",
+      "output_in_frame": 15,
+      "output_out_frame": 80,
+      "safe_region_normalized": [0.1, 0.15, 0.9, 0.28],
+      "font_license_status": "SYSTEM_VERIFIED"
+    }
+  ],
+  "audio_tracks": [
+    {
+      "clip_id": "A001",
+      "track": "A1_BGM",
+      "source_id": "U003",
+      "source_rights": "OWNED",
+      "source_in_s": 0.0,
+      "source_out_s": 6.0,
+      "output_in_frame": 0,
+      "output_out_frame": 180
+    }
+  ]
+}
