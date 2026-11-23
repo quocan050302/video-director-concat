@@ -902,6 +902,63 @@ def validate_perceptual_audio_evidence(
     return {"status": "PERCEPTUAL_AUDIO_PENDING", "live_human_confirmed": False, "reason": f"VERDICT_NOT_PASS:{verdict or 'EMPTY'}", "trust_note": trust_note}
 
 
+def validate_owner_visual_evidence(
+    evidence: dict[str, Any] | None,
+    actual_mp4_sha: str,
+    exported_at: str | None = None,
+) -> dict[str, Any]:
+    """Require OWNER_HUMAN visual review confirmation matching MP4 SHA-256 and post-export timestamp; honor explicit CREATIVE_REJECTED."""
+    trust_note = "Owner-recorded visual creative review; JSON assertions are not external cryptographic biometrics."
+    if not evidence or not isinstance(evidence, dict):
+        return {"status": "OWNER_VISUAL_PENDING", "live_human_confirmed": False, "reason": "NO_OWNER_VISUAL_EVIDENCE", "trust_note": trust_note}
+
+    reviewer_type = str(evidence.get("reviewer_type") or "").strip().upper()
+    if reviewer_type in NON_HUMAN_REVIEWER_TYPES or reviewer_type != "OWNER_HUMAN":
+        return {
+            "status": "OWNER_VISUAL_PENDING",
+            "live_human_confirmed": False,
+            "reason": f"NON_HUMAN_OR_UNVERIFIED_REVIEWER_REJECTED:{reviewer_type or 'MISSING'}",
+            "trust_note": trust_note,
+        }
+
+    conf_src = str(evidence.get("confirmation_source") or "").strip().upper()
+    if conf_src != "OWNER_INTERACTION_RECORDED":
+        return {
+            "status": "OWNER_VISUAL_PENDING",
+            "live_human_confirmed": False,
+            "reason": f"UNVERIFIED_CONFIRMATION_SOURCE:{conf_src or 'MISSING'}",
+            "trust_note": trust_note,
+        }
+
+    reviewer = str(evidence.get("reviewer") or "").strip()
+    reviewed_ts = _parse_iso_ts(evidence.get("reviewed_at"))
+    sha = str(evidence.get("mp4_sha256") or "").strip().lower()
+    verdict = str(evidence.get("verdict") or "").strip().upper()
+    viewing_ok = evidence.get("viewing_confirmed") is True
+
+    if verdict in {"FAIL", "REJECT", "REJECTED", "CREATIVE_REJECTED"} and sha == actual_mp4_sha.lower():
+        return {
+            "status": "CREATIVE_REJECTED",
+            "live_human_confirmed": True,
+            "reason": str(evidence.get("rejection_reason") or "OWNER_REJECTED_VISUALS"),
+            "trust_note": trust_note,
+        }
+
+    if not reviewer or reviewed_ts is None or not viewing_ok:
+        return {"status": "OWNER_VISUAL_PENDING", "live_human_confirmed": False, "reason": "INCOMPLETE_OWNER_VISUAL_METADATA", "trust_note": trust_note}
+    if sha != actual_mp4_sha.lower():
+        return {"status": "OWNER_VISUAL_PENDING", "live_human_confirmed": False, "reason": "VISUAL_EVIDENCE_SHA256_MISMATCH", "trust_note": trust_note}
+
+    if exported_at:
+        exp_ts = _parse_iso_ts(exported_at)
+        if exp_ts and (reviewed_ts - exp_ts).total_seconds() < -5.0:
+            return {"status": "OWNER_VISUAL_PENDING", "live_human_confirmed": False, "reason": "REVIEWED_BEFORE_EXPORT", "trust_note": trust_note}
+
+    if verdict == "PASS":
+        return {"status": "PASS_VISUAL_OWNER", "live_human_confirmed": True, "reason": "OWNER_HUMAN_VISUAL_CONFIRMED", "trust_note": trust_note}
+    return {"status": "OWNER_VISUAL_PENDING", "live_human_confirmed": False, "reason": f"VERDICT_NOT_PASS:{verdict or 'EMPTY'}", "trust_note": trust_note}
+
+
 def write_post_export_qa(report: dict[str, Any], out_path: str | Path) -> None:
     p = Path(out_path)
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -926,6 +983,8 @@ def evaluate_export(
     preview_checks: list[Any] | None = None,
     mcp_export_evidence: dict[str, Any] | None = None,
     perceptual_audio_evidence: dict[str, Any] | None = None,
+    owner_visual_evidence: dict[str, Any] | None = None,
+    require_owner_visual: bool | None = None,
     qa_level: str = "technical",
     gate_phase: str = "C1",
     release_policy: str = "full-creative",
@@ -941,15 +1000,23 @@ def evaluate_export(
         raise ValueError(f"Unsupported release_policy: {release_policy!r}")
 
     effective_policy = "technical-smoke" if allow_technical_release_profile else release_policy
+    effective_require_visual = (
+        require_owner_visual
+        if require_owner_visual is not None
+        else (gate_phase in {"C2", "C4"} and effective_policy == "full-creative")
+    )
 
     probe = probe_export(mp4, require_full_decode=(qa_level == "release"))
     if probe.get("status") != "PASS_PROBE_AND_DECODE":
+        is_blocked = str(probe.get("status", "")).startswith("BLOCKED")
         return {
             "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             "qa_level": qa_level,
             "gate_phase": gate_phase,
             "release_policy": effective_policy,
-            "overall_status": "FAIL_EXPORT_QA" if not str(probe.get("status", "")).startswith("BLOCKED") else probe["status"],
+            "overall_status": "FAIL_EXPORT_QA" if not is_blocked else probe["status"],
+            "technical_export_status": "BLOCKED" if is_blocked else "FAIL",
+            "creative_production_status": "DRAFT",
             "mp4_qa_pass": False,
             "technical_e2e_gate_pass": False,
             "creative_release_gate_pass": False,
@@ -958,6 +1025,7 @@ def evaluate_export(
             "production_release_pass": False,
             "release_blockers": [probe.get("status", "FAIL_EXPORT_PROBE")],
             "audio_perceptual_status": "PERCEPTUAL_AUDIO_PENDING",
+            "owner_visual_status": "OWNER_VISUAL_PENDING" if effective_require_visual else "SKIPPED_NOT_REQUIRED",
             "probe": probe,
         }
 
@@ -1002,12 +1070,22 @@ def evaluate_export(
         and all(pr["status"] == "PASS_PREVIEW_MATCH" for pr in preview_results)
     )
 
+    if effective_require_visual or owner_visual_evidence is not None:
+        visual_detail = validate_owner_visual_evidence(
+            owner_visual_evidence, probe["sha256"], exported_at=exported_at_hint,
+        )
+    else:
+        visual_detail = {"status": "SKIPPED_NOT_REQUIRED", "live_human_confirmed": False, "reason": "NOT_REQUIRED_FOR_PHASE"}
+    owner_visual_status = visual_detail["status"]
+
     if qa_level == "technical":
         return {
             "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             "qa_level": "technical",
             "gate_phase": gate_phase,
             "overall_status": "PASS_TECHNICAL_ONLY" if technical_ok else "FAIL_TECHNICAL_QA",
+            "technical_export_status": "PASS" if technical_ok else "FAIL",
+            "creative_production_status": "REJECTED" if owner_visual_status == "CREATIVE_REJECTED" else "DRAFT",
             "mp4_qa_pass": technical_ok,
             "technical_e2e_gate_pass": False,
             "creative_release_gate_pass": False,
@@ -1018,6 +1096,8 @@ def evaluate_export(
             "trust_boundary": "STANDALONE_MEDIA_DIAGNOSTIC_DOES_NOT_PROVE_CONCAT_ORIGIN",
             "audio_signal_status": audio_check["audio_signal_status"],
             "audio_perceptual_status": audio_check["audio_perceptual_status"],
+            "owner_visual_status": owner_visual_status,
+            "owner_visual_detail": visual_detail,
             "probe": probe,
             "spec_check": dim_check,
             "black_freeze_check": bf_check,
@@ -1030,6 +1110,16 @@ def evaluate_export(
         release_blockers.append(
             f"INVALID_RELEASE_POLICY_FOR_PHASE: technical-smoke is restricted to C1, forbidden on {gate_phase}"
         )
+
+    if edl and str(edl.get("voice_policy") or "").strip().upper().startswith("REQUIRED"):
+        has_vo_in_edl = any(
+            isinstance(ac, dict)
+            and not (ac.get("optional") is True and ac.get("explicitly_omitted") is True)
+            and any(k in f"{ac.get('track', '')} {ac.get('role', '')} {ac.get('clip_id', '')}".upper() for k in ("VO", "VOICE", "NARRAT", "DIALOG", "SPEECH"))
+            for ac in edl.get("audio_tracks", [])
+        )
+        if not has_vo_in_edl:
+            release_blockers.append("MISSING_REQUIRED_VO_TRACK")
 
     prov_check = validate_mcp_export_provenance(
         mcp_export_evidence, probe,
@@ -1067,8 +1157,14 @@ def evaluate_export(
 
     technical_e2e_pass = False
     creative_release_pass = False
+    creative_prod_status = "DRAFT"
 
-    if release_blockers:
+    if owner_visual_status == "CREATIVE_REJECTED":
+        release_blockers.append("CREATIVE_REJECTED_BY_OWNER")
+        overall = "CREATIVE_REJECTED"
+        creative_prod_status = "REJECTED"
+        technical_e2e_pass = bool(technical_ok and live_evidence_ok and not [b for b in release_blockers if b != "CREATIVE_REJECTED_BY_OWNER"])
+    elif release_blockers:
         if (
             technical_ok
             and len(release_blockers) == 1
@@ -1077,18 +1173,34 @@ def evaluate_export(
             overall = "PASS_SCHEMA_CONSISTENCY_UNIT_ONLY"
         else:
             overall = "FAIL_RELEASE_QA"
-    elif require_audio and percep == "PERCEPTUAL_AUDIO_PENDING":
-        if gate_phase == "C1" and effective_policy == "technical-smoke":
-            overall = "C1_TECHNICAL_E2E_PASS_PERCEPTUAL_PENDING"
-            technical_e2e_pass = True
-            creative_release_pass = False
-        else:
-            overall = "PENDING_PERCEPTUAL_AUDIO"
-            release_blockers.append("PERCEPTUAL_AUDIO_PENDING")
+        if "FAIL_AUDIO_PERCEPTUAL" in release_blockers:
+            creative_prod_status = "REJECTED"
     else:
-        overall = "PASS_END_TO_END_EXPORT_QA"
-        technical_e2e_pass = True
-        creative_release_pass = True
+        audio_pending = bool(require_audio and percep == "PERCEPTUAL_AUDIO_PENDING")
+        visual_pending = bool(effective_require_visual and owner_visual_status != "PASS_VISUAL_OWNER")
+        if audio_pending and not visual_pending:
+            if gate_phase == "C1" and effective_policy == "technical-smoke":
+                overall = "C1_TECHNICAL_E2E_PASS_PERCEPTUAL_PENDING"
+                technical_e2e_pass = True
+                creative_release_pass = False
+                creative_prod_status = "PENDING_OWNER_REVIEW"
+            else:
+                overall = "PENDING_PERCEPTUAL_AUDIO"
+                release_blockers.append("PERCEPTUAL_AUDIO_PENDING")
+                creative_prod_status = "PENDING_OWNER_REVIEW"
+        elif visual_pending and not audio_pending:
+            overall = "PENDING_OWNER_VISUAL_APPROVAL"
+            release_blockers.append("OWNER_VISUAL_APPROVAL_PENDING")
+            creative_prod_status = "PENDING_OWNER_REVIEW"
+        elif audio_pending and visual_pending:
+            overall = "PENDING_OWNER_REVIEW"
+            release_blockers.extend(["PERCEPTUAL_AUDIO_PENDING", "OWNER_VISUAL_APPROVAL_PENDING"])
+            creative_prod_status = "PENDING_OWNER_REVIEW"
+        else:
+            overall = "PASS_END_TO_END_EXPORT_QA"
+            technical_e2e_pass = True
+            creative_release_pass = True
+            creative_prod_status = "PASS"
 
     live_verified = bool(
         live_evidence_ok
@@ -1096,6 +1208,10 @@ def evaluate_export(
         and prov_check["evidence_trust_level"] == "LIVE_OBSERVED_WITH_RAW_TRANSCRIPT"
     )
     prod_pass = bool(live_verified and creative_release_pass)
+    tech_export_status = "PASS" if (technical_ok and live_evidence_ok and not any(
+        b.startswith(("FAIL_TECHNICAL", "FAIL_PREVIEW", "PREVIEW_", "MISSING_REQUIRED_VO", "INVALID_RELEASE_POLICY", "MCP_"))
+        for b in release_blockers
+    )) else "FAIL"
 
     return {
         "checked_at": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -1103,6 +1219,8 @@ def evaluate_export(
         "gate_phase": gate_phase,
         "release_policy": effective_policy,
         "overall_status": overall,
+        "technical_export_status": tech_export_status,
+        "creative_production_status": creative_prod_status,
         "mp4_qa_pass": technical_ok,
         "technical_e2e_gate_pass": technical_e2e_pass,
         "creative_release_gate_pass": creative_release_pass,
@@ -1113,6 +1231,8 @@ def evaluate_export(
         "release_blockers": release_blockers,
         "audio_signal_status": audio_check["audio_signal_status"],
         "audio_perceptual_status": percep,
+        "owner_visual_status": owner_visual_status,
+        "owner_visual_detail": visual_detail,
         "mcp_provenance": prov_check,
         "probe": probe,
         "spec_check": dim_check,
@@ -1140,6 +1260,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mcp-evidence", type=Path, help="MCP export provenance JSON (required for --qa-level release).")
     parser.add_argument("--preview-manifest", type=Path, help="Preview manifest JSON (required for --qa-level release).")
     parser.add_argument("--perceptual-evidence", type=Path, help="Optional OWNER_HUMAN listening confirmation JSON.")
+    parser.add_argument("--owner-visual-evidence", type=Path, help="Optional OWNER_HUMAN visual review confirmation JSON.")
+    parser.add_argument("--require-owner-visual", action="store_true", help="Explicitly require OWNER_VISUAL_APPROVAL.")
     parser.add_argument("--expected-run-id", type=str, help="Expected run_id to reject stale provenance.")
     parser.add_argument("--expected-project-id", type=str, help="Expected project_id to reject stale provenance.")
     parser.add_argument("--allow-silent", action="store_true", help="Allow silent video ONLY when plan has no mandatory audio.")
@@ -1151,6 +1273,7 @@ def main(argv: list[str] | None = None) -> int:
     mcp_ev = json.loads(args.mcp_evidence.read_text(encoding="utf-8")) if args.mcp_evidence else None
     prev_checks = _load_preview_manifest(args.preview_manifest)
     percep_ev = json.loads(args.perceptual_evidence.read_text(encoding="utf-8")) if args.perceptual_evidence else None
+    vis_ev = json.loads(args.owner_visual_evidence.read_text(encoding="utf-8")) if args.owner_visual_evidence else None
 
     report = evaluate_export(
         args.mp4,
@@ -1159,6 +1282,8 @@ def main(argv: list[str] | None = None) -> int:
         preview_checks=prev_checks,
         mcp_export_evidence=mcp_ev,
         perceptual_audio_evidence=percep_ev,
+        owner_visual_evidence=vis_ev,
+        require_owner_visual=True if args.require_owner_visual else None,
         qa_level=args.qa_level,
         gate_phase=args.gate_phase,
         release_policy=args.release_policy,

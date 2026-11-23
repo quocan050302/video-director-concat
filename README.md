@@ -23,7 +23,7 @@ video-director-concat/
 ├── README.md                 # Repository overview
 ├── README_INSTALL.md         # Windows x64 / macOS arm64 / macOS x86_64 install matrix
 ├── MANIFEST.json             # Non-self-referential file inventory & SHA-256 hashes
-├── references/               # 12 core workflow references + macOS/Windows platform adapters
+├── references/               # 13 core workflow & KH-01 references + macOS/Windows platform adapters
 ├── templates/                # 15 structured creative, rights, MCP plan, QA & human-gate templates
 ├── scripts/                  # Pure Python stdlib platform adapter, probe, validator & QA helpers
 └── tests/                    # Automated static, EDL contract, read-only, platform & no-false-PASS tests

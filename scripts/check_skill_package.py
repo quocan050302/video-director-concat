@@ -29,6 +29,7 @@ REQUIRED_PATHS = [
     "references/09_safety_recovery_performance.md",
     "references/10_capability_and_version_matrix.md",
     "references/11_source_inspiration_license_notes.md",
+    "references/12_kh_01_video_use_creative_fidelity.md",
     "templates/CREATIVE_BRIEF.md",
     "templates/SOURCE_INVENTORY.csv",
     "templates/HOOK_CANDIDATES.md",
@@ -59,6 +60,7 @@ REQUIRED_PATHS = [
     "tests/test_qa_r2_regressions.py",
     "tests/test_qa_r3_regressions.py",
     "tests/test_ci_portability_qa_ci_01.py",
+    "tests/test_kh01_creative_fidelity.py",
 ]
 
 SECRET_PATTERNS = [
@@ -136,6 +138,8 @@ def validate_frontmatter(skill_md: Path) -> dict[str, Any]:
         errors.append("SKILL.md missing mandatory anti-fake-PASS export rule")
     if "platform_macos.md" not in text or "platform_windows.md" not in text:
         errors.append("SKILL.md must reference both platform_macos.md and platform_windows.md")
+    if "12_kh_01_video_use_creative_fidelity.md" not in text:
+        errors.append("SKILL.md must reference 12_kh_01_video_use_creative_fidelity.md")
 
     return {"status": "PASS" if not errors else "FAIL", "fields": fields, "errors": errors}
 

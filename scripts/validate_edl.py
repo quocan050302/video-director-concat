@@ -623,6 +623,23 @@ def validate_mode_constraints(
             if otype in {"caption", "captions", "karaoke", "subtitle", "subtitles"}:
                 errors.append(f"UNAUTHORIZED_CAPTION_OVERLAY: {ov.get('overlay_id')} while caption_policy=OFF")
 
+    voice_policy = str((brief or {}).get("voice_policy") or edl.get("voice_policy") or "").strip().upper()
+    if voice_policy.startswith("REQUIRED"):
+        has_vo_track = False
+        for ac in edl.get("audio_tracks", []):
+            if not isinstance(ac, dict):
+                continue
+            if ac.get("optional") is True and ac.get("explicitly_omitted") is True:
+                continue
+            marker = f"{ac.get('track', '')} {ac.get('role', '')} {ac.get('clip_id', '')}".upper()
+            if any(k in marker for k in ("VO", "VOICE", "NARRAT", "DIALOG", "SPEECH")):
+                has_vo_track = True
+                break
+        if not has_vo_track:
+            errors.append(
+                f"MISSING_REQUIRED_VO_TRACK: voice_policy={voice_policy} requires at least one non-omitted VO/narration clip in audio_tracks"
+            )
+
     for shot in edl.get("shots", []):
         if not isinstance(shot, dict):
             continue
@@ -651,6 +668,141 @@ def validate_mode_constraints(
                     errors.append(f"LANDSCAPE_IN_PORTRAIT_NEEDS_EXPLICIT_FRAMING: {sid} has framing_mode={fm}")
 
     return errors
+
+
+def collect_framing_warnings(
+    edl: dict[str, Any],
+    inventory: dict[str, dict[str, Any]] | None = None,
+) -> list[str]:
+    """Emit objective 9:16 letterbox/black-bar warnings requiring human visual critic review (never numeric auto-pass)."""
+    warnings: list[str] = []
+    inv = inventory or {}
+    spec = edl.get("output_spec") or {}
+    out_w_i = spec.get("width", 0) if _is_strict_int(spec.get("width")) else 0
+    out_h_i = spec.get("height", 0) if _is_strict_int(spec.get("height")) else 0
+    if out_w_i <= 0 or out_h_i <= 0 or out_h_i <= out_w_i:
+        return warnings
+
+    for shot in edl.get("shots", []):
+        if not isinstance(shot, dict):
+            continue
+        sid = str(shot.get("shot_id") or "<shot>")
+        src = inv.get(str(shot.get("source_id") or ""))
+        if not src:
+            continue
+        try:
+            sw, sh = int(src.get("width", 0)), int(src.get("height", 0))
+        except (TypeError, ValueError):
+            sw, sh = 0, 0
+        if sw <= sh or sw <= 0 or sh <= 0:
+            continue
+        fm = str(shot.get("framing_mode") or "").strip().lower()
+        has_crop_plan = bool(
+            shot.get("crop_xywh_normalized")
+            or shot.get("background_treatment")
+            or shot.get("framing_plan")
+        )
+        if fm == "letterbox_intentional" or (fm == "framed" and not has_crop_plan):
+            warnings.append(
+                f"PORTRAIT_BLACK_BAR_RISK: {sid} ({sw}x{sh} -> {out_w_i}x{out_h_i}, framing_mode={fm}) requires human visual critic review"
+            )
+    return warnings
+
+
+def validate_kh01_source_pack(
+    inventory: dict[str, dict[str, Any]],
+    *,
+    expected_video_count: int | None = None,
+    expected_filenames: list[str] | None = None,
+    required_analysis_only_names: list[str] | None = None,
+    required_viewpoint_ids: list[str] | None = None,
+    edl: dict[str, Any] | None = None,
+    viewpoint_exceptions: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """KH-01/P0 & P3 preflight separating candidate video files, ANALYSIS_ONLY references, and GENERATED audio."""
+    errors: list[str] = []
+    video_records: dict[str, dict[str, Any]] = {}
+    analysis_only_ids: set[str] = set()
+    generated_audio_ids: set[str] = set()
+    by_basename: dict[str, tuple[str, dict[str, Any]]] = {}
+
+    for sid, meta in inventory.items():
+        if not isinstance(meta, dict):
+            continue
+        mtype = str(meta.get("media_type") or "").strip().lower()
+        rtag = str(meta.get("rights_tag") or "").strip().upper()
+        rel = str(meta.get("relative_label") or meta.get("filename") or "").strip()
+        base = Path(rel).name if rel else ""
+        if base:
+            by_basename[base] = (sid, meta)
+        if mtype == "video":
+            video_records[sid] = meta
+        if rtag == "ANALYSIS_ONLY":
+            analysis_only_ids.add(sid)
+        if mtype == "audio" and rtag == "GENERATED":
+            generated_audio_ids.add(sid)
+
+    if expected_video_count is not None and len(video_records) < expected_video_count:
+        errors.append(
+            f"INCOMPLETE_VIDEO_SOURCE_PACK: found {len(video_records)} video files, expected >= {expected_video_count} "
+            f"(generated_audio_excluded={len(generated_audio_ids)})"
+        )
+
+    missing_names: list[str] = []
+    for fname in expected_filenames or []:
+        if fname not in by_basename:
+            missing_names.append(fname)
+    if missing_names:
+        errors.append(f"MISSING_REQUIRED_SOURCE_FILES: {missing_names}")
+
+    for ref_name in required_analysis_only_names or []:
+        hit = by_basename.get(ref_name)
+        if not hit:
+            errors.append(f"MISSING_REQUIRED_REFERENCE_FILE: {ref_name}")
+        else:
+            ref_sid, ref_meta = hit
+            ref_rights = str(ref_meta.get("rights_tag") or "").strip().upper()
+            if ref_rights != "ANALYSIS_ONLY":
+                errors.append(
+                    f"REFERENCE_MUST_BE_ANALYSIS_ONLY: {ref_sid} ({ref_name}) has rights_tag={ref_rights!r}"
+                )
+
+    if edl is not None:
+        used_shot_ids: set[str] = set()
+        for grp_name in ("shots", "audio_tracks", "overlays"):
+            for item in edl.get(grp_name, []):
+                if not isinstance(item, dict):
+                    continue
+                item_sid = str(item.get("source_id") or "").strip()
+                if not item_sid:
+                    continue
+                if grp_name == "shots":
+                    used_shot_ids.add(item_sid)
+                if item_sid in analysis_only_ids:
+                    errors.append(f"ANALYSIS_ONLY_SOURCE_IN_EDL: {grp_name} references {item_sid}")
+
+        exc_map = viewpoint_exceptions or {}
+        for vp_id in required_viewpoint_ids or []:
+            if vp_id not in used_shot_ids:
+                exc = exc_map.get(vp_id)
+                valid_exc = (
+                    isinstance(exc, dict)
+                    and str(exc.get("status") or "").strip().upper() == "SOURCE_FIDELITY_GAP"
+                    and bool(str(exc.get("reason") or "").strip())
+                    and bool(str(exc.get("evidence_ref") or "").strip())
+                )
+                if not valid_exc:
+                    errors.append(
+                        f"REQUIRED_VIEWPOINT_OMITTED_WITHOUT_EVIDENCE: {vp_id} neither used in EDL nor documented with SOURCE_FIDELITY_GAP + evidence_ref"
+                    )
+
+    return {
+        "status": "PASS_KH01_SOURCE_PACK" if not errors else "FAIL_KH01_SOURCE_PACK",
+        "video_source_count": len(video_records),
+        "analysis_only_ids": sorted(analysis_only_ids),
+        "generated_audio_ids": sorted(generated_audio_ids),
+        "errors": errors,
+    }
 
 
 def _evaluate_source_integrity(
@@ -797,6 +949,8 @@ def validate_all(
             status = "PASS_EDL_STRUCTURAL_ONLY"
             release_ready = False
 
+    framing_warnings = collect_framing_warnings(edl, inv)
+
     return {
         "validation_mode": validation_mode,
         "gate_phase": gate_phase,
@@ -809,6 +963,9 @@ def validate_all(
         "claim_review_note": "STRUCTURAL_EVIDENCE_CHECK_ONLY_HUMAN_FACT_REVIEW_SEPARATE",
         "ownership_note": "OWNER_PROVENANCE_AND_SHA256_NOT_CRYPTOGRAPHIC_LEGAL_OWNERSHIP",
         "error_count": len(all_errors),
+        "warning_count": len(framing_warnings),
+        "warnings": framing_warnings,
+        "requires_human_visual_critic": bool(framing_warnings),
         "checks": checks,
         "errors": all_errors,
     }
