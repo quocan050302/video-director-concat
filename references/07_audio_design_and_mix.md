@@ -27,6 +27,9 @@ Separate audio onto distinct editable native Concat tracks:
 2. **BGM Track**: Matches emotional arc; sits clearly beneath voice and ducks cleanly during spoken beats using tested Concat keyframes/volume controls.
 3. **SFX Track**: Subtle, motivated cues (whoosh, UI click, room tone, impact, soft chime) below narration unless an intentional beat demands accent. Use a cohesive motif rather than random loud sound effects.
 
-### Signal QA vs Perceptual QA (Strict Separation)
-- **`PASS_AUDIO_SIGNAL`**: Measured on the **real exported MP4** via `ffprobe`/ffmpeg signal analysis (audio stream present, sample rate/channels valid, segment RMS/LUFS reasonable, true peak free of clipping, no unintended dropouts/silence outside planned beats, A/V duration alignment).
-- **`PASS_AUDIO_PERCEPTUAL`**: Requires actual listening verification (natural prosody, absence of metallic artifacts/pops/clicks, comfortable BGM ducking, pleasant pacing). If no human/perceptual listening pass occurred, report **`PERCEPTUAL_AUDIO_PENDING`** — never inflate `PASS_AUDIO_SIGNAL` into full creative/perceptual approval.
+### Signal QA vs Owner Human Perceptual QA (Strict Separation)
+- **`PASS_AUDIO_SIGNAL`**: Measured on the **real exported MP4** via `verify_export.py` (`volumedetect`, `ebur128=peak=true` integrated LUFS + true peak, and `silencedetect` including trailing EOF silence).
+  - Unexpected silence dropouts overlapping active audio -> `FAIL_UNEXPECTED_AUDIO_DROPOUT` (planned silence/pause cues declared in `SOUND_CUE_SHEET.csv` / EDL are classified as `SILENCE_PLANNED`).
+  - Missing/unparseable `ebur128` LUFS/true peak when required -> `MEASUREMENT_INCOMPLETE` (never silent PASS).
+  - `--allow-silent` cannot override an EDL/cue sheet that explicitly requires voiceover/dialogue (`FAIL_SILENT_OVERRIDE_CONFLICTS_WITH_AUDIO_PLAN`).
+- **`PASS_AUDIO_PERCEPTUAL`**: Requires actual owner playback review recorded as structured `OWNER_HUMAN` evidence (`reviewer_type: "OWNER_HUMAN"`, `playback_confirmed: true`, matching `mp4_sha256`, valid ISO `reviewed_at`, and auditory checklist: intelligibility, pops/clicks, ducking, sync, no unexpected silence). Agent/bot self-attestation (`AGENT`/`BOT`/`MODEL`) is rejected and remains **`PERCEPTUAL_AUDIO_PENDING`**.

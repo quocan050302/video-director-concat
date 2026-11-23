@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Read-only source discovery, streaming SHA-256, ffprobe metadata, and bounded contact sheets.
 
-Streaming os.scandir traversal enforces max_files, max_total_gb, max_entries_scanned,
-max_dirs_scanned, and max_wallclock_s immediately without buffering unbounded directory trees.
-Never modifies, moves, or deletes original sources.
+True streaming os.scandir traversal (never materializes sorted(scandir) over unbounded directories)
+enforcing max_files, max_total_gb, max_entries_scanned, max_dirs_scanned, max_wallclock_s, and
+bounded rejected arrays. Explicitly flags incomplete scans (INCOMPLETE_SOURCE_INVENTORY, exit 2).
 """
 
 from __future__ import annotations
@@ -34,6 +34,18 @@ PROTECTED_EXACT_ROOTS = {
     "/", "/System", "/Library", "/Users", "/Volumes", "/bin", "/sbin", "/usr", "/etc", "/private/etc",
     "C:\\", "C:\\Windows", "C:\\Program Files", "C:\\Program Files (x86)", "C:\\Users",
 }
+
+INCOMPLETE_REASON_PREFIXES = (
+    "SCAN_BUDGET_REACHED:",
+    "SCANDIR_ERROR:",
+    "STAT_ERROR:",
+    "PATH_NOT_FOUND",
+    "PROTECTED_SYSTEM_PATH_REJECTED",
+    "TOP_LEVEL_SYMLINK_REJECTED",
+    "MAX_FILE_SIZE_EXCEEDED",
+    "MAX_TOTAL_SIZE_EXCEEDED",
+    "UNICODE_LABEL_COLLISION",
+)
 
 INVENTORY_FIELDS = [
     "source_id",
@@ -67,7 +79,6 @@ def _is_protected_path(resolved: Path) -> bool:
     norm = str(resolved)
     if norm in PROTECTED_EXACT_ROOTS:
         return True
-    # Block scanning user's entire HOME wholesale as a single root
     try:
         if resolved == Path.home().resolve():
             return True
@@ -80,14 +91,15 @@ def _is_protected_path(resolved: Path) -> bool:
 
 
 def _has_traversal_segments(raw_path: str) -> bool:
-    return ".." in Path(raw_path).parts
+    parts = [seg for seg in raw_path.replace("\\", "/").split("/") if seg]
+    return ".." in parts
 
 
-def discover_inputs(
+def discover_inputs_detailed(
     paths: list[str | Path],
     limits: dict[str, Any] | None = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Streaming, bounded, read-only file discovery with symlink escape and budget guards."""
+) -> dict[str, Any]:
+    """True streaming, bounded, read-only file discovery with explicit completeness metadata."""
     cfg = {
         "max_depth": 5,
         "max_files": 200,
@@ -96,6 +108,7 @@ def discover_inputs(
         "max_entries_scanned": 5000,
         "max_dirs_scanned": 1000,
         "max_wallclock_s": 30.0,
+        "max_rejected": 200,
         "allow_all_extensions": False,
     }
     if limits:
@@ -107,33 +120,46 @@ def discover_inputs(
     max_entries = int(cfg["max_entries_scanned"])
     max_dirs = int(cfg["max_dirs_scanned"])
     max_wallclock = float(cfg["max_wallclock_s"])
+    max_rejected = int(cfg["max_rejected"])
     multi_root = len(paths) > 1
 
     start_t = time.monotonic()
     discovered: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
+    rejected_truncated_count = 0
+    incomplete_reasons: list[str] = []
     seen_realpaths: set[str] = set()
+    seen_labels: set[str] = set()
     total_bytes = 0
     entries_scanned = 0
     dirs_scanned = 0
     budget_stopped = False
 
+    def _record_rejection(where: str, reason: str) -> None:
+        nonlocal rejected_truncated_count
+        if len(rejected) < max_rejected:
+            rejected.append({"path": where, "reason": reason})
+        else:
+            rejected_truncated_count += 1
+        if reason.startswith(INCOMPLETE_REASON_PREFIXES) and reason not in incomplete_reasons:
+            incomplete_reasons.append(reason)
+
     def _check_budget(where: str) -> bool:
         nonlocal budget_stopped
         if len(discovered) >= max_files:
-            rejected.append({"path": where, "reason": "SCAN_BUDGET_REACHED:MAX_FILES"})
+            _record_rejection(where, "SCAN_BUDGET_REACHED:MAX_FILES")
             budget_stopped = True
             return True
         if entries_scanned >= max_entries:
-            rejected.append({"path": where, "reason": "SCAN_BUDGET_REACHED:MAX_ENTRIES"})
+            _record_rejection(where, "SCAN_BUDGET_REACHED:MAX_ENTRIES")
             budget_stopped = True
             return True
         if dirs_scanned >= max_dirs:
-            rejected.append({"path": where, "reason": "SCAN_BUDGET_REACHED:MAX_DIRS"})
+            _record_rejection(where, "SCAN_BUDGET_REACHED:MAX_DIRS")
             budget_stopped = True
             return True
         if (time.monotonic() - start_t) >= max_wallclock:
-            rejected.append({"path": where, "reason": "SCAN_BUDGET_REACHED:MAX_WALLCLOCK"})
+            _record_rejection(where, "SCAN_BUDGET_REACHED:MAX_WALLCLOCK")
             budget_stopped = True
             return True
         return False
@@ -149,22 +175,26 @@ def discover_inputs(
         try:
             size = file_path.stat().st_size
         except OSError as exc:
-            rejected.append({"path": real_key, "reason": f"STAT_ERROR:{exc}"})
+            _record_rejection(real_key, f"STAT_ERROR:{exc}")
             return
         if size > max_file_bytes:
-            rejected.append({"path": real_key, "reason": "MAX_FILE_SIZE_EXCEEDED"})
+            _record_rejection(real_key, "MAX_FILE_SIZE_EXCEEDED")
             return
         if total_bytes + size > max_total_bytes:
-            rejected.append({"path": real_key, "reason": "MAX_TOTAL_SIZE_EXCEEDED"})
+            _record_rejection(real_key, "MAX_TOTAL_SIZE_EXCEEDED")
             return
-        seen_realpaths.add(real_key)
-        total_bytes += size
         try:
             rel_inner = file_path.relative_to(base_root).as_posix()
         except ValueError:
             rel_inner = file_path.name
         rel_norm = unicodedata.normalize("NFC", rel_inner)
         rel_label = f"{root_id}/{rel_norm}" if multi_root else rel_norm
+        if rel_label in seen_labels:
+            _record_rejection(real_key, f"UNICODE_LABEL_COLLISION:{rel_label}")
+            return
+        seen_realpaths.add(real_key)
+        seen_labels.add(rel_label)
+        total_bytes += size
         discovered.append(
             {
                 "abs_path": file_path,
@@ -182,77 +212,101 @@ def discover_inputs(
         root_id = f"R{root_idx:02d}"
         raw_str = str(raw)
         if _has_traversal_segments(raw_str):
-            rejected.append({"path": raw_str, "reason": "PATH_TRAVERSAL_REJECTED"})
+            _record_rejection(raw_str, "PATH_TRAVERSAL_REJECTED")
             continue
 
         p = Path(raw_str)
         if not p.exists() and not p.is_symlink():
-            rejected.append({"path": raw_str, "reason": "PATH_NOT_FOUND"})
+            _record_rejection(raw_str, "PATH_NOT_FOUND")
             continue
         if p.is_symlink():
-            rejected.append({"path": raw_str, "reason": "TOP_LEVEL_SYMLINK_REJECTED"})
+            _record_rejection(raw_str, "TOP_LEVEL_SYMLINK_REJECTED")
             continue
 
         root_resolved = p.resolve()
         if _is_protected_path(root_resolved):
-            rejected.append({"path": raw_str, "reason": "PROTECTED_SYSTEM_PATH_REJECTED"})
+            _record_rejection(raw_str, "PROTECTED_SYSTEM_PATH_REJECTED")
             continue
 
         if root_resolved.is_file():
-            entries_scanned += 1
             if not _check_budget(str(root_resolved)):
+                entries_scanned += 1
                 _consider_file(root_resolved, root_resolved.parent, root_id)
             continue
 
         queue: deque[tuple[Path, int]] = deque([(root_resolved, 0)])
         while queue and not budget_stopped:
             cur_dir, depth = queue.popleft()
-            dirs_scanned += 1
-            if _check_budget(str(cur_dir)):
+            if dirs_scanned >= max_dirs:
+                _record_rejection(str(cur_dir), "SCAN_BUDGET_REACHED:MAX_DIRS")
+                budget_stopped = True
                 break
+            dirs_scanned += 1
 
+            child_dirs: list[Path] = []
             try:
                 with os.scandir(cur_dir) as it:
-                    entries = sorted(it, key=lambda e: e.name)
+                    # TRUE streaming iteration: NEVER sort or materialize unbounded directory!
+                    for entry in it:
+                        if _check_budget(entry.path):
+                            break
+                        entries_scanned += 1
+                        ep = Path(entry.path)
+                        try:
+                            if entry.is_symlink():
+                                reason = "SYMLINK_DIR_REJECTED" if entry.is_dir(follow_symlinks=True) else "SYMLINK_FILE_REJECTED"
+                                _record_rejection(entry.path, reason)
+                                continue
+                            if entry.is_dir(follow_symlinks=False):
+                                if depth < int(cfg["max_depth"]):
+                                    child_dirs.append(ep)
+                                continue
+                            if not entry.is_file(follow_symlinks=False):
+                                continue
+                            rfp = ep.resolve(strict=True)
+                        except OSError as exc:
+                            _record_rejection(entry.path, f"STAT_ERROR:{exc}")
+                            continue
+
+                        try:
+                            rfp.relative_to(root_resolved)
+                        except ValueError:
+                            _record_rejection(entry.path, "SYMLINK_ESCAPE_REJECTED")
+                            continue
+
+                        _consider_file(rfp, root_resolved, root_id)
             except OSError as exc:
-                rejected.append({"path": str(cur_dir), "reason": f"SCANDIR_ERROR:{exc}"})
+                _record_rejection(str(cur_dir), f"SCANDIR_ERROR:{exc}")
                 continue
 
-            for entry in entries:
-                if _check_budget(entry.path):
-                    break
-                entries_scanned += 1
-                ep = Path(entry.path)
-                try:
-                    if entry.is_symlink():
-                        reason = "SYMLINK_DIR_REJECTED" if entry.is_dir(follow_symlinks=True) else "SYMLINK_FILE_REJECTED"
-                        rejected.append({"path": entry.path, "reason": reason})
-                        continue
-                    if entry.is_dir(follow_symlinks=False):
-                        if depth < int(cfg["max_depth"]):
-                            queue.append((ep, depth + 1))
-                        continue
-                    if not entry.is_file(follow_symlinks=False):
-                        continue
-                    rfp = ep.resolve(strict=True)
-                except OSError as exc:
-                    rejected.append({"path": entry.path, "reason": f"STAT_ERROR:{exc}"})
-                    continue
+            # Deterministic ordering of the bounded child dirs collected within budget
+            for cd in sorted(child_dirs, key=lambda d: d.name):
+                queue.append((cd, depth + 1))
 
-                try:
-                    rfp.relative_to(root_resolved)
-                except ValueError:
-                    rejected.append({"path": entry.path, "reason": "SYMLINK_ESCAPE_REJECTED"})
-                    continue
-
-                _consider_file(rfp, root_resolved, root_id)
-
+    # Deterministic lexical sort ONLY over the bounded collected set
     discovered.sort(key=lambda item: (item["root_id"], item["relative_label"]))
-    return discovered, rejected
+    scan_complete = (not budget_stopped) and (len(incomplete_reasons) == 0)
+    return {
+        "discovered": discovered,
+        "rejected": rejected,
+        "rejected_truncated_count": rejected_truncated_count,
+        "scan_complete": scan_complete,
+        "incomplete_reasons": incomplete_reasons,
+        "entries_scanned": entries_scanned,
+        "dirs_scanned": dirs_scanned,
+    }
+
+
+def discover_inputs(
+    paths: list[str | Path],
+    limits: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Backwards-compatible wrapper returning (discovered, rejected)."""
+    res = discover_inputs_detailed(paths, limits=limits)
+    return res["discovered"], res["rejected"]
 
 
 def stream_sha256(path: str | Path, chunk_bytes: int = 1024 * 1024) -> str:
-    """Compute SHA-256 via streaming binary chunks without loading whole media into RAM."""
     h = hashlib.sha256()
     with open(path, "rb") as fh:
         while True:
@@ -273,7 +327,6 @@ def _parse_fps(rate_str: str | None) -> float | None:
 
 
 def probe_media(path: str | Path, timeout_s: int = 20) -> dict[str, Any]:
-    """Run read-only ffprobe subprocess (argv array) and parse media stream metadata."""
     ffprobe_bin = shutil.which("ffprobe")
     if not ffprobe_bin:
         return {"probe_status": "FFPROBE_MISSING", "error": "ffprobe not found in PATH"}
@@ -294,10 +347,7 @@ def probe_media(path: str | Path, timeout_s: int = 20) -> dict[str, Any]:
         return {"probe_status": "PROBE_OS_ERROR", "error": str(exc)}
 
     if proc.returncode != 0:
-        return {
-            "probe_status": "PROBE_FAILED",
-            "error": (proc.stderr or proc.stdout).strip()[:400],
-        }
+        return {"probe_status": "PROBE_FAILED", "error": (proc.stderr or proc.stdout).strip()[:400]}
 
     try:
         data = json.loads(proc.stdout)
@@ -319,10 +369,7 @@ def probe_media(path: str | Path, timeout_s: int = 20) -> dict[str, Any]:
     avg_fps_str = (v_stream or {}).get("avg_frame_rate", "")
     r_fps = _parse_fps(r_fps_str)
     avg_fps = _parse_fps(avg_fps_str)
-    vfr_suspect = False
-    if r_fps and avg_fps and r_fps > 0:
-        if abs(r_fps - avg_fps) / r_fps > 0.05:
-            vfr_suspect = True
+    vfr_suspect = bool(r_fps and avg_fps and r_fps > 0 and abs(r_fps - avg_fps) / r_fps > 0.05)
 
     rotation = 0
     if v_stream:
@@ -379,7 +426,6 @@ def sample_contact_sheet(
     sha_prefix: str = "",
     timeout_s: int = 20,
 ) -> list[str]:
-    """Extract bounded read-only sample stills using collision-free source_id + sha8 naming."""
     ffmpeg_bin = shutil.which("ffmpeg")
     if not ffmpeg_bin or not times or out_dir is None:
         return []
@@ -392,15 +438,9 @@ def sample_contact_sheet(
     for idx, t in enumerate(times[:6]):
         target = out_path / f"{safe_prefix}_t{idx:02d}_{t:.2f}s.jpg"
         cmd = [
-            ffmpeg_bin,
-            "-hide_banner",
-            "-loglevel", "error",
+            ffmpeg_bin, "-hide_banner", "-loglevel", "error",
             "-ss", f"{max(0.0, float(t)):.3f}",
-            "-i", str(path),
-            "-frames:v", "1",
-            "-vf", scale_expr,
-            "-y",
-            str(target),
+            "-i", str(path), "-frames:v", "1", "-vf", scale_expr, "-y", str(target),
         ]
         try:
             proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, check=False)
@@ -412,7 +452,6 @@ def sample_contact_sheet(
 
 
 def write_inventory(records: list[dict[str, Any]], out_csv: str | Path, out_json: str | Path | None = None) -> None:
-    """Write deterministic sorted SOURCE_INVENTORY.csv and optional JSON metadata."""
     ordered = sorted(records, key=lambda r: r.get("source_id", ""))
     csv_path = Path(out_csv)
     csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -454,13 +493,8 @@ def _probe_one(
         if dur > 0:
             times = sorted({round(min(dur * frac, max(0.0, dur - 0.1)), 2) for frac in (0.1, 0.5, 0.85)})
             stills = sample_contact_sheet(
-                abs_path,
-                times,
-                max_pixels=640,
-                out_dir=contact_dir,
-                source_id=source_id,
-                sha_prefix=sha[:8],
-                timeout_s=timeout_s,
+                abs_path, times, max_pixels=640, out_dir=contact_dir,
+                source_id=source_id, sha_prefix=sha[:8], timeout_s=timeout_s,
             )
 
     return {
@@ -493,7 +527,7 @@ def _probe_one(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Bounded read-only media inventory probe.")
+    parser = argparse.ArgumentParser(description="Bounded streaming read-only media inventory probe.")
     parser.add_argument("inputs", nargs="+", help="Input files or folders (read-only).")
     parser.add_argument("--out-csv", type=Path, required=True, help="Output SOURCE_INVENTORY.csv path.")
     parser.add_argument("--out-json", type=Path, help="Optional JSON inventory path.")
@@ -508,6 +542,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-wallclock", type=float, default=30.0)
     parser.add_argument("--timeout", type=int, default=20)
     parser.add_argument("--workers", type=int, default=2)
+    parser.add_argument("--allow-partial-inventory", action="store_true", help="Inspection-only flag; still never marks status OK when incomplete.")
     args = parser.parse_args(argv)
 
     limits = {
@@ -519,7 +554,8 @@ def main(argv: list[str] | None = None) -> int:
         "max_dirs_scanned": args.max_dirs,
         "max_wallclock_s": args.max_wallclock,
     }
-    discovered, rejected = discover_inputs(args.inputs, limits=limits)
+    scan = discover_inputs_detailed(args.inputs, limits=limits)
+    discovered = scan["discovered"]
     worker_count = max(1, min(args.workers, 4))
 
     records: list[dict[str, Any]] = []
@@ -534,16 +570,35 @@ def main(argv: list[str] | None = None) -> int:
     write_inventory(records, args.out_csv, args.out_json)
 
     failed = [r for r in records if r["probe_status"] != "OK"]
+    scan_complete = scan["scan_complete"]
+    if not records:
+        status = "INCOMPLETE_SOURCE_INVENTORY" if not scan_complete else "NO_MEDIA_FOUND"
+        exit_code = 2 if not scan_complete else 1
+    elif failed:
+        status = "PARTIAL_OR_FAILED"
+        exit_code = 1
+    elif not scan_complete:
+        status = "PARTIAL_INVENTORY_APPROVED_FOR_INSPECTION_ONLY" if args.allow_partial_inventory else "INCOMPLETE_SOURCE_INVENTORY"
+        exit_code = 0 if args.allow_partial_inventory else 2
+    else:
+        status = "OK"
+        exit_code = 0
+
     summary = {
-        "status": "OK" if (records and not failed) else ("NO_MEDIA_FOUND" if not records else "PARTIAL_OR_FAILED"),
+        "status": status,
+        "scan_complete": scan_complete,
+        "incomplete_reasons": scan["incomplete_reasons"],
+        "entries_scanned": scan["entries_scanned"],
+        "dirs_scanned": scan["dirs_scanned"],
         "discovered_count": len(discovered),
         "probed_ok": len(records) - len(failed),
         "probed_failed": len(failed),
-        "rejected": rejected,
+        "rejected": scan["rejected"],
+        "rejected_truncated_count": scan["rejected_truncated_count"],
         "out_csv": str(args.out_csv),
     }
     print(json.dumps(summary, indent=2, ensure_ascii=False))
-    return 0 if (records and not failed) else 1
+    return exit_code
 
 
 if __name__ == "__main__":

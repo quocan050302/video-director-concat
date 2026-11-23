@@ -41,11 +41,11 @@ python3 -m pytest -v tests
 python3 scripts/platform_adapter.py --json
 ```
 
-### Hardened Validation Contracts (QA.R1)
+### Hardened Validation Contracts (QA.R1 & QA.R2)
 
-- **EDL (`scripts/validate_edl.py`)**: Default `--validation-mode release` is strictly fail-closed (requires verified `SOURCE_INVENTORY`, `probe_status=OK`, valid SHA-256, inventory-authoritative rights, complete `LICENSED` ledger evidence, `GENERATED` provenance, and resolvable claim `evidence_ref`). Planning drafts may use `--validation-mode draft` (`PASS_EDL_DRAFT_ONLY`, never release green).
-- **Export QA (`scripts/verify_export.py`)**: Strictly separates `--qa-level technical` (`PASS_TECHNICAL_ONLY` standalone media check) from `--qa-level release` (requires `MCP_EXPORT_EVIDENCE.json`, non-empty `PREVIEW_MANIFEST.json` with SSIM+PSNR+dimensions checks, full `ffmpeg` decode, EOF freeze detection, EBU R128 LUFS/true-peak + silence-dropout checks, and structured perceptual audio evidence).
-- **Source Discovery & Integrity (`scripts/probe_sources.py`, `scripts/verify_source_hashes.py`)**: Streaming bounded `os.scandir` traversal (`max_files`, `max_entries`, `max_dirs`, `max_wallclock`), multi-root disambiguation (`R01/...`), collision-free contact sheets, and multi-root SHA-256 verification (`--root R01=...`).
+- **EDL (`scripts/validate_edl.py`)**: Default `--validation-mode release --run-dir <dir>` fails closed on duplicate inventory/ledger keys, missing `run_dir`, missing `#fragment` anchor content, Windows/POSIX path traversal, `license_url`-only claims without archived `license_evidence_path`, and `GENERATED` assets missing separate code + weights/voice licenses. Supports `--source-integrity <json> --require-source-integrity` for on-disk C2 source verification. Planning drafts use `--validation-mode draft` (`PASS_EDL_DRAFT_ONLY`).
+- **Export QA (`scripts/verify_export.py`)**: Separates `--qa-level technical` (`PASS_TECHNICAL_ONLY`) from `--qa-level release --gate-phase C1|C2|C4 --release-policy technical-smoke|full-creative`. Distinguishes `LIVE_MCP_EXPORT_EVIDENCE` from `UNIT_SIMULATED_PROVENANCE`, checks full `tool_trace`, matched `export_start`/`export_wait` job IDs, `CONCAT_MCP_PREVIEW_FRAME` preview origin + SSIM/PSNR, EOF freeze/silence detection, mandatory EBU R128 LUFS/true-peak measurement, and `OWNER_HUMAN` perceptual audio confirmation (restricting `technical-smoke` strictly to C1).
+- **Source Discovery & Integrity (`scripts/probe_sources.py`, `scripts/verify_source_hashes.py`)**: True streaming `os.scandir` traversal (no unbounded `sorted(scandir)`), explicit `INCOMPLETE_SOURCE_INVENTORY` (exit `2`) whenever scan budgets or permissions truncate discovery, multi-root disambiguation (`R01/...`), collision-free contact sheets, and multi-root SHA-256 verification (`--root R01=...`).
 - **Platform Discovery (`scripts/platform_adapter.py`)**: Supports official bundles, `CONCAT_BINARY`, `PATH`, and local source-built Cargo binaries (`--source-checkout`), with decoupled OS, disk (`DISK_OK`/`DISK_WARN`/`DISK_BLOCK`), binary, QA-tool, and MCP statuses.
 
 ### Install as Antigravity Global Skill

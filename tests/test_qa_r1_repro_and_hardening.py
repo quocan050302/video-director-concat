@@ -180,7 +180,12 @@ def test_p0_01_r08_unknown_id_bad_probe_bad_sha_and_overlay_analysis_only_blocke
     assert any("FORBIDDEN_RIGHTS_IN_FINAL_EDL" in e for e in res_ov["errors"])
 
 
-def test_p0_01_r09_licensed_evidence_and_generated_provenance_enforced() -> None:
+def test_p0_01_r09_licensed_evidence_and_generated_provenance_enforced(tmp_path: Path) -> None:
+    (tmp_path / "SOURCE_TRUTH.md").write_text("# Truth\n- U001: verified product shot.\n", encoding="utf-8")
+    ev_dir = tmp_path / "evidence"
+    ev_dir.mkdir()
+    (ev_dir / "lic1_terms.txt").write_text("Commercial license archived.\n", encoding="utf-8")
+    (ev_dir / "kokoro_license.txt").write_text("Apache-2.0 code + Apache-2.0 weights + af_heart voice.\n", encoding="utf-8")
     inv = _valid_inventory()
 
     edl_lic = _valid_edl()
@@ -195,7 +200,7 @@ def test_p0_01_r09_licensed_evidence_and_generated_provenance_enforced() -> None
             "license_evidence_path": "",
         }
     }
-    res_weak = ve.validate_all(edl_lic, inventory=inv, license_ledger=weak_ledger, validation_mode="release")
+    res_weak = ve.validate_all(edl_lic, inventory=inv, license_ledger=weak_ledger, run_dir=tmp_path, validation_mode="release")
     assert res_weak["status"] == "FAIL_EDL_INVALID"
     assert any("MISSING_LICENSE_EVIDENCE" in e for e in res_weak["errors"])
 
@@ -210,13 +215,13 @@ def test_p0_01_r09_licensed_evidence_and_generated_provenance_enforced() -> None
             "redistribution_restrictions": "NO_RESALE",
         }
     }
-    res_ok = ve.validate_all(edl_lic, inventory=inv, license_ledger=strong_ledger, validation_mode="release")
+    res_ok = ve.validate_all(edl_lic, inventory=inv, license_ledger=strong_ledger, run_dir=tmp_path, validation_mode="release")
     assert res_ok["status"] == "PASS_EDL_VALID_FOR_RELEASE", res_ok["errors"]
 
     edl_gen = _valid_edl()
     edl_gen["audio_tracks"][0]["source_id"] = "GEN1"
     edl_gen["audio_tracks"][0]["source_rights"] = "GENERATED"
-    res_gen_fail = ve.validate_all(edl_gen, inventory=inv, license_ledger={}, validation_mode="release")
+    res_gen_fail = ve.validate_all(edl_gen, inventory=inv, license_ledger={}, run_dir=tmp_path, validation_mode="release")
     assert res_gen_fail["status"] == "FAIL_EDL_INVALID"
     assert any("MISSING_GENERATED_PROVENANCE" in e for e in res_gen_fail["errors"])
 
@@ -232,7 +237,7 @@ def test_p0_01_r09_licensed_evidence_and_generated_provenance_enforced() -> None
             "redistribution_restrictions": "NONE",
         }
     }
-    res_gen_ok = ve.validate_all(edl_gen, inventory=inv, license_ledger=gen_ledger, validation_mode="release")
+    res_gen_ok = ve.validate_all(edl_gen, inventory=inv, license_ledger=gen_ledger, run_dir=tmp_path, validation_mode="release")
     assert res_gen_ok["status"] == "PASS_EDL_VALID_FOR_RELEASE", res_gen_ok["errors"]
 
 
@@ -286,7 +291,8 @@ def test_p0_02_r10_claim_evidence_truth_gate(tmp_path: Path) -> None:
 
 # --- P1-03 (R07): Rational FPS, Speed, Invalid Numerics & Layered V2 ---
 
-def test_p1_03_r07_rational_fps_speed_invalid_numerics_and_layered_v2() -> None:
+def test_p1_03_r07_rational_fps_speed_invalid_numerics_and_layered_v2(tmp_path: Path) -> None:
+    (tmp_path / "SOURCE_TRUTH.md").write_text("# Truth\n- U001 verified.\n", encoding="utf-8")
     inv = _valid_inventory()
 
     # Invalid numerics fail cleanly with zero uncaught TypeError
@@ -294,7 +300,7 @@ def test_p1_03_r07_rational_fps_speed_invalid_numerics_and_layered_v2() -> None:
     edl["shots"][0]["speed"] = float("nan")
     edl["shots"][0]["safe_region_normalized"] = ["0.1", True, 0.9, 0.8]
     edl["shots"][1]["output_in_frame"] = True
-    res = ve.validate_all(edl, inventory=inv, validation_mode="release")
+    res = ve.validate_all(edl, inventory=inv, run_dir=tmp_path, validation_mode="release")
     assert res["status"] == "FAIL_EDL_INVALID"
     assert any("INVALID_SPEED" in e for e in res["errors"])
     assert any("INVALID_SAFE_REGION" in e for e in res["errors"])
@@ -314,7 +320,7 @@ def test_p1_03_r07_rational_fps_speed_invalid_numerics_and_layered_v2() -> None:
     edl_ntsc["shots"][1].update({"timeline_fps": "30000/1001", "source_in_s": 1.0, "source_out_s": 2.5, "speed": 0.75, "output_in_frame": 60, "output_out_frame": 120})
     edl_ntsc["overlays"][0].update({"output_in_frame": 10, "output_out_frame": 50})
     edl_ntsc["audio_tracks"][0].update({"source_out_s": 4.0, "output_out_frame": 120})
-    res_ntsc = ve.validate_all(edl_ntsc, inventory=inv, validation_mode="release")
+    res_ntsc = ve.validate_all(edl_ntsc, inventory=inv, run_dir=tmp_path, validation_mode="release")
     assert res_ntsc["status"] == "PASS_EDL_VALID_FOR_RELEASE", res_ntsc["errors"]
 
     # Valid V2 overlay shot + owned still image shot passes cleanly
@@ -334,7 +340,7 @@ def test_p1_03_r07_rational_fps_speed_invalid_numerics_and_layered_v2() -> None:
         "framing_mode": "native",
         "safe_region_normalized": [0.1, 0.1, 0.9, 0.9],
     })
-    res_v2 = ve.validate_all(edl_v2, inventory=inv, validation_mode="release")
+    res_v2 = ve.validate_all(edl_v2, inventory=inv, run_dir=tmp_path, validation_mode="release")
     assert res_v2["status"] == "PASS_EDL_VALID_FOR_RELEASE", res_v2["errors"]
 
 
@@ -343,7 +349,10 @@ def test_p1_03_r07_rational_fps_speed_invalid_numerics_and_layered_v2() -> None:
 def test_p0_03_r14_r15_r16_r22_release_blocks_without_mcp_provenance_preview_and_perceptual(tmp_path: Path) -> None:
     exports_dir = tmp_path / "exports"
     exports_dir.mkdir()
-    mp4 = exports_dir / "synthetic_test.mp4"
+    proj_dir = tmp_path / "projects" / "PRJ_SMOKE_01"
+    proj_dir.mkdir(parents=True)
+    (proj_dir / "project.concat").write_text("{}", encoding="utf-8")
+    mp4 = exports_dir / "UNIT_SYNTHETIC_FFMPEG_FIXTURE_NOT_CONCAT_EXPORT.mp4"
     _make_av_mp4(mp4, duration_s=2.0)
 
     r_tech = vx.evaluate_export(mp4, qa_level="technical", require_audio=True)
@@ -363,22 +372,42 @@ def test_p0_03_r14_r15_r16_r22_release_blocks_without_mcp_provenance_preview_and
         [_ffmpeg_or_skip(), "-hide_banner", "-loglevel", "error", "-ss", "1.0", "-i", str(mp4), "-frames:v", "1", "-y", str(prev_png)],
         check=True,
     )
+    prev_sha = hashlib.sha256(prev_png.read_bytes()).hexdigest()
     mp4_sha = hashlib.sha256(mp4.read_bytes()).hexdigest()
     mcp_ev = {
+        "evidence_source": "LIVE_MCP_EXPORT_EVIDENCE",
         "project_id": "PRJ_SMOKE_01",
+        "project_path": str(proj_dir),
+        "allowed_project_root": str(tmp_path / "projects"),
         "run_id": "RUN_01",
         "concat_binary": "/Applications/Concat.app/Contents/MacOS/concat",
+        "concat_binary_sha256": "1" * 64,
         "concat_version": "0.2.12",
         "mcp_mode": "headless",
-        "export_start": {"job_id": "JOB_01", "status": "started"},
-        "export_wait": {"job_id": "JOB_01", "status": "completed", "exit_ok": True},
+        "export_start": {"job_id": "JOB_01", "status": "started", "started_at": "2026-11-23T11:59:58Z"},
+        "export_wait": {"job_id": "JOB_01", "status": "completed", "exit_ok": True, "completed_at": "2026-11-23T11:59:59Z"},
         "reopen_verified": True,
         "timeline_fingerprint": "fp_abc123",
+        "timeline_fingerprint_before_save": "fp_abc123",
+        "timeline_fingerprint_after_reopen": "fp_abc123",
+        "tool_trace": [
+            {"tool": "project_create", "call_id": "c1", "status": "ok", "ts": "2026-11-23T11:59:50Z"},
+            {"tool": "timeline_read", "call_id": "c2", "status": "ok", "ts": "2026-11-23T11:59:51Z"},
+            {"tool": "preview_frame", "call_id": "c3", "status": "ok", "ts": "2026-11-23T11:59:52Z"},
+            {"tool": "project_save", "call_id": "c4", "status": "ok", "ts": "2026-11-23T11:59:53Z"},
+            {"tool": "project_close", "call_id": "c5", "status": "ok", "ts": "2026-11-23T11:59:54Z"},
+            {"tool": "project_open", "call_id": "c6", "status": "ok", "ts": "2026-11-23T11:59:55Z"},
+            {"tool": "export_start", "call_id": "c7", "status": "ok", "ts": "2026-11-23T11:59:58Z"},
+            {"tool": "export_wait", "call_id": "c8", "status": "ok", "ts": "2026-11-23T11:59:59Z"},
+        ],
         "output_path": str(mp4),
         "allowed_export_root": str(exports_dir),
         "sha256": mp4_sha,
         "exported_at": "2026-11-23T12:00:00Z",
     }
+    prev_manifest = [
+        {"path": str(prev_png), "timestamp_s": 1.0, "origin": "CONCAT_MCP_PREVIEW_FRAME", "tool_call_id": "c3", "sha256": prev_sha}
+    ]
 
     # Tampered/failed MCP provenance cases MUST fail
     bad_wait = copy.deepcopy(mcp_ev)
@@ -393,38 +422,49 @@ def test_p0_03_r14_r15_r16_r22_release_blocks_without_mcp_provenance_preview_and
     bad_root["allowed_export_root"] = str(tmp_path / "other_dir")
     assert vx.validate_mcp_export_provenance(bad_root, r_tech["probe"])["status"] == "FAIL_MCP_PROVENANCE"
 
-    # Real provenance + preview WITHOUT perceptual listening -> PENDING_PERCEPTUAL_AUDIO
+    # Real provenance schema + preview WITHOUT OWNER_HUMAN listening -> PENDING_PERCEPTUAL_AUDIO
     r_rel_pending = vx.evaluate_export(
-        mp4, qa_level="release", require_audio=True,
-        preview_checks=[(prev_png, 1.0)], mcp_export_evidence=mcp_ev,
+        mp4, qa_level="release", gate_phase="C1", release_policy="full-creative", require_audio=True,
+        preview_checks=prev_manifest, mcp_export_evidence=mcp_ev,
     )
     assert r_rel_pending["mp4_qa_pass"] is True
     assert r_rel_pending["audio_perceptual_status"] == "PERCEPTUAL_AUDIO_PENDING"
+    assert r_rel_pending["creative_release_gate_pass"] is False
     assert r_rel_pending["release_gate_pass"] is False
     assert r_rel_pending["overall_status"] == "PENDING_PERCEPTUAL_AUDIO"
 
-    # Explicit technical-release profile marks C1_TECHNICAL_E2E_PASS_PERCEPTUAL_PENDING (not PASS_END_TO_END)
+    # Explicit C1 technical-smoke policy sets technical_e2e_gate_pass=True but NEVER creative_release_gate_pass=True
     r_tech_rel = vx.evaluate_export(
-        mp4, qa_level="release", require_audio=True,
-        preview_checks=[(prev_png, 1.0)], mcp_export_evidence=mcp_ev,
-        allow_technical_release_profile=True,
+        mp4, qa_level="release", gate_phase="C1", release_policy="technical-smoke", require_audio=True,
+        preview_checks=prev_manifest, mcp_export_evidence=mcp_ev,
     )
     assert r_tech_rel["overall_status"] == "C1_TECHNICAL_E2E_PASS_PERCEPTUAL_PENDING"
-    assert r_tech_rel["release_gate_pass"] is True
+    assert r_tech_rel["technical_e2e_gate_pass"] is True
+    assert r_tech_rel["creative_release_gate_pass"] is False
+    assert r_tech_rel["release_gate_pass"] is False
 
-    # Full perceptual confirmation matching SHA -> PASS_END_TO_END_EXPORT_QA
+    # Schema-level validator unit test with OWNER_HUMAN listening checklist (unit test only, not live Concat proof)
     perceptual_ev = {
-        "reviewer": "qa_listener",
+        "reviewer": "machine_owner",
+        "reviewer_type": "OWNER_HUMAN",
         "reviewed_at": "2026-11-23T12:05:00Z",
         "mp4_sha256": mp4_sha,
+        "playback_confirmed": True,
         "verdict": "PASS",
+        "auditory_checklist": {
+            "intelligibility": True,
+            "pops_clicks": True,
+            "ducking": True,
+            "sync": True,
+            "no_unexpected_silence": True,
+        },
     }
     r_rel_pass = vx.evaluate_export(
-        mp4, qa_level="release", require_audio=True,
-        preview_checks=[(prev_png, 1.0)], mcp_export_evidence=mcp_ev,
+        mp4, qa_level="release", gate_phase="C1", release_policy="full-creative", require_audio=True,
+        preview_checks=prev_manifest, mcp_export_evidence=mcp_ev,
         perceptual_audio_evidence=perceptual_ev,
     )
-    assert r_rel_pass["release_gate_pass"] is True
+    assert r_rel_pass["creative_release_gate_pass"] is True
     assert r_rel_pass["overall_status"] == "PASS_END_TO_END_EXPORT_QA"
     assert r_rel_pass["preview_comparisons"][0]["ssim"] >= 0.75
 

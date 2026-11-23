@@ -9,14 +9,16 @@ Keep creative editorial planning strictly decoupled from editor-specific RPC cal
 ## 1. Frame-Accurate EDL Contract (`release` vs `draft`)
 
 All shot timing, rights, and claim citations are validated by `python3 scripts/validate_edl.py` BEFORE any Concat edit tool is called:
-- **Fail-Closed `release` mode (default, `--validation-mode release`)**:
+- **Fail-Closed `release` mode (default, `--validation-mode release --run-dir <dir>`)**:
+  - Rejects duplicate `source_id` in `SOURCE_INVENTORY.csv` and duplicate `asset_id` in `LICENSE_LEDGER.csv` (never silent last-wins).
   - Requires an independently probed `SOURCE_INVENTORY.csv`/`.json` (empty/missing inventory -> `MISSING_SOURCE_INVENTORY`).
-  - Every `source_id` in `shots`, `audio_tracks`, AND media `overlays` MUST exist in inventory with `probe_status == "OK"`, a valid 64-hex `sha256`, and a safe non-escaping `relative_label`.
+  - Every `source_id` in `shots`, `audio_tracks`, AND media `overlays` MUST exist in inventory with `probe_status == "OK"`, a valid 64-hex `sha256`, and a cross-platform safe `relative_label` (rejects both `/` and `\` traversal, drive prefixes, and NUL bytes).
   - Inventory `rights_tag` is authoritative — EDL `source_rights` is a consistency check only, never self-certification.
   - `ANALYSIS_ONLY` and `UNKNOWN_RIGHTS` are hard-blocked across video, audio, and overlays.
-  - `LICENSED` requires `LICENSE_LEDGER.csv` entry with `decision=APPROVED`, `commercial_use_allowed=YES`, and non-empty `license_url` or verified `license_evidence_path`.
-  - `GENERATED` requires explicit code/model/weights/voice provenance in `LICENSE_LEDGER.csv`.
-  - Claims marked `VERIFIED_WITH_EVIDENCE` require a non-empty, safe, resolvable `evidence_ref` (never pointing to `ANALYSIS_ONLY` sources; external `http(s)` URLs require `checked_at` + local `evidence_archive_path`). Structural check is distinct from human factual review.
+  - `LICENSED` requires `LICENSE_LEDGER.csv` entry with `decision=APPROVED`, `commercial_use_allowed=YES`, and an archived `license_evidence_path` verified on disk (`license_url` alone is insufficient).
+  - `GENERATED` requires separate code and weights/model/voice licenses plus archived `license_evidence_path` in `LICENSE_LEDGER.csv`.
+  - Claims marked `VERIFIED_WITH_EVIDENCE` require `--run-dir` (or verified evidence bundle), non-empty resolvable evidence file with verified `#fragment` anchor content, valid `source_id` membership if supplied, never pointing to `ANALYSIS_ONLY` sources, and ISO `checked_at` + local `evidence_archive_path` for `http(s)` URLs. Structural check is distinct from human factual review.
+  - For C2/final gates, pass `--source-integrity <verify_source_hashes.json> --require-source-integrity` to confirm on-disk `PASS_SOURCE_INTEGRITY` separately from structural EDL eligibility.
   - Returns `PASS_EDL_VALID_FOR_RELEASE` only when every release check passes.
 - **Draft mode (`--validation-mode draft`)**: Permits planning drafts without full inventory/ledger while still enforcing frame grid, finite numerics, and blocking `ANALYSIS_ONLY` / `UNKNOWN_RIGHTS` / `UNKNOWN_REMOVE`. Returns `PASS_EDL_DRAFT_ONLY` (never release green).
 - **Rational FPS & Layered Tracks**: Declare `"timeline_fps": "30/1"` (or `"24000/1001"`, `"30000/1001"`, `"60/1"`). Reject `NaN`/`Infinity`/bools/invalid speeds. `V1` must be continuous without unintended gaps/overlaps; `V2+` overlay shots and still-image shots are validated within `[0, V1_end]`.

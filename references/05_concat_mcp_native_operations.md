@@ -40,3 +40,10 @@ Concat exposes its native engine over **newline-delimited JSON-RPC 2.0 on stdio*
 - **Project locks (`concat.lock`)**: Single writer per project. If a project is open in Concat GUI, headless mode refuses it — **never** delete `concat.lock` or kill the user's GUI window.
 - **No blind retries on non-idempotent ops**: If a `clip_add` or `title_add` times out, call `timeline_read` first to reconcile existing IDs before retrying. Cap targeted retries at 2.
 - **Missing GUI features**: GUI features (e.g., built-in TTS, certain masks/captions) are NOT assumed available in MCP unless present in `tools/list` and tested. Document gaps in `MCP_LIMITATION.md` and use compliant fallbacks (e.g., local WAV -> `media_import`, clean hard cuts).
+
+## 4. Live Provenance vs Unit Fixture Separation (`QA.R2`)
+
+- **Strict Provenance Source Tagging**:
+  - `LIVE_MCP_EXPORT_EVIDENCE`: Captured directly from actual live Concat MCP `tools/call` replies during the current run. Must include `concat_binary_sha256`, `project_path` inside `allowed_project_root` (no symlink), `tool_trace` covering `project_create`, `timeline_read`, `preview_frame`, `project_save`, `project_close`, `project_open`, `export_start`, and `export_wait`, matching non-empty `export_start.job_id == export_wait.job_id` (unless explicit `WAIT_OMITS_JOB_ID_CORRELATED` schema variant with `request_correlation_id` is proven from live `tools/list`), plausible timestamp ordering, identical `timeline_fingerprint_before_save == timeline_fingerprint_after_reopen`, non-symlink `output_path` inside `allowed_export_root`, and previews tagged `origin: "CONCAT_MCP_PREVIEW_FRAME"` correlated to `preview_frame` `tool_call_id`s (never frames extracted from the exported MP4).
+  - `UNIT_SIMULATED_PROVENANCE`: Allowed ONLY in offline unit tests validating schema consistency (`PASS_SCHEMA_CONSISTENCY_UNIT_ONLY`). Can **never** set `live_concat_verified: true` or `PASS_END_TO_END_EXPORT_QA`.
+  - **Honest Trust Boundary**: JSON logs verify orchestrator consistency and on-disk artifact hashes; they are not external cryptographic attestation. Never redact/omit failed tool calls or inject auth tokens into logs.
